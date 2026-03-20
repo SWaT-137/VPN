@@ -187,7 +187,6 @@ class MainWindow(QWidget):
         
         # Показываем сообщение об успешном сохранении
         QMessageBox.information(dialog, "Успех", "Настройки сохранены!")
-        
         # Закрываем диалог
         dialog.accept()
 
