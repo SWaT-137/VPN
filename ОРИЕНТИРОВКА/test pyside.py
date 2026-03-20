@@ -16,6 +16,11 @@ class ОсновноеОкно(QMainWindow):
         ТрафикДанные = 100
         self.серверЗначение.setText(СтатусДанные)
         self.СтатусЗначение.setText(ИмяСервера)
+        self.СтатусЗначение.setStyleSheet("""
+            background-color: green;
+            color: white;
+            border-radius: 100px;
+        """)
         self.ПингЗначение.setText(f"{ПингДанные} мс")
         self.СкоростьЗначение.setText(f"{СкоростьДанные} мб/c")
         self.ТрафикЗначение.setText(f"{ТрафикДанные} мб")
