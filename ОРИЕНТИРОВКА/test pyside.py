@@ -1,23 +1,25 @@
 import sys
 from PySide6 import QtWidgets
-from PySide6.QtWidgets import QApplication, QMainWindow, QPushButton, QLabel
-from PySide6.QtCore import QSize, QTimer
+from PySide6.QtWidgets import QApplication, QMainWindow, QPushButton, QLabel, QDialog, QLineEdit, QMessageBox
+from PySide6.QtCore import QSize, QTimer, QSettings
 from PySide6.QtGui import QFont
 
+ИмяСервера = ""
+СтатусДанные = "Подключенно"
+ПингДанные = 50
+СкоростьДанные = 3.2
+ТрафикДанные = 100
+Пароль = ""
+Порт = 443
 
 
 class ОсновноеОкно(QMainWindow):
     ТаймерОбновления = QTimer()
+
     def Таймер(self):
-        ИмяСервера = "belarus.vpn.com"
-        СтатусДанные = "Подключенно"
-        ПингДанные = 50
-        СкоростьДанные = 3.2
-        ТрафикДанные = 100
         self.серверЗначение.setText(СтатусДанные)
         self.СтатусЗначение.setText(ИмяСервера)
         self.СтатусЗначение.setStyleSheet("""
-            background-color: green;
             color: white;
             border-radius: 100px;
         """)
@@ -54,14 +56,100 @@ class ОсновноеОкно(QMainWindow):
             self.СкоростьЗначение.setVisible(False)
             self.Трафик.setVisible(False)
             self.ТрафикЗначение.setVisible(False)
+            self.серверЗначение.setText("Отключенно")
             self.ТаймерОбновления.stop()
 
     def привтун(self):
         self.button.setStyleSheet("background-color: green;")
 
+    def открыть_новое_окно(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Настройки")
+        dialog.setGeometry(200, 200, 250, 250)
+        dialog.setStyleSheet("background-color: #26252d;")
 
 
+        label = QLabel("Сервер:", dialog)
+        label.setGeometry(10, 10, 100, 20)
+        label.setStyleSheet("color: white; font-size: 12px;")
 
+        self.серверИзменение = QLineEdit(dialog)
+        self.серверИзменение.setGeometry(10, 30, 220, 25)
+        self.серверИзменение.setPlaceholderText("Введите адрес для подключения")
+        self.серверИзменение.setStyleSheet("background-color: white; color: black;")
+        self.серверИзменение.setText(ИмяСервера)
+
+        label2 = QLabel("Порт (по умолчанию 443):", dialog)
+        label2.setGeometry(10, 70, 150, 20)
+        label2.setStyleSheet("color: white; font-size: 12px;")
+
+        self.портСервера = QLineEdit(dialog)
+        self.портСервера.setGeometry(10, 90, 220, 25)
+        self.портСервера.setPlaceholderText("Введите адрес для подключения")
+        self.портСервера.setStyleSheet("background-color: white; color: black;")
+        self.портСервера.setText(str(Порт))
+
+        label3 = QLabel("Пароль для подключения:", dialog)
+        label3.setGeometry(10, 130, 150, 20)
+        label3.setStyleSheet("color: white; font-size: 12px;")
+
+        self.парольИзменение = QLineEdit(dialog)
+        self.парольИзменение.setGeometry(10, 150, 220, 25)
+        self.парольИзменение.setPlaceholderText("Введите пароль для подключения")
+        self.парольИзменение.setStyleSheet("background-color: white; color: black;")
+        self.парольИзменение.setText(str(Пароль))
+
+        self.save_btn = QPushButton("Сохранить", dialog)
+        self.save_btn.setGeometry(10, 190, 100, 25)
+        self.save_btn.clicked.connect(lambda: self.save_settings(dialog))
+
+
+        cancel_btn = QPushButton("Отмена", dialog)
+        cancel_btn.setGeometry(130, 190, 100, 25)
+        cancel_btn.clicked.connect(dialog.reject)
+
+        dialog.exec()
+
+
+        dialog.exec()
+
+    def load_settings(self):
+        """Загружает настройки из файла"""
+        self.settings = QSettings("MyVPN", "VPNSettings")
+        self.server = self.settings.value("server", "")
+        self.port = self.settings.value("port", "")
+        self.password = self.settings.value("password", "")
+        print(f"Загружены настройки: сервер={self.server}, порт={self.port}")
+
+
+    def save_settings(self, dialog):
+
+        server = self.серверИзменение.text()
+        port = self.портСервера.text()
+        password = self.парольИзменение.text()
+
+        if not server or not port or not password:
+            QMessageBox.warning(dialog, "Предупреждение", "Заполните все поля!")
+            return
+
+        # Сохраняем настройки
+        self.server = server
+        self.port = port
+        self.password = password
+
+        # Сохраняем в QSettings
+        self.settings.setValue("server", server)
+        self.settings.setValue("port", port)
+        self.settings.setValue("password", password)
+        self.settings.sync()  # Принудительно сохраняем
+
+        print(f"Настройки сохранены: Сервер={server}, Порт={port}")
+
+        # Показываем сообщение об успешном сохранении
+        QMessageBox.information(dialog, "Успех", "Настройки сохранены!")
+
+        # Закрываем диалог
+        dialog.accept()
 
     def __init__(self):
         super().__init__()
@@ -83,7 +171,7 @@ class ОсновноеОкно(QMainWindow):
         self.настройки = QPushButton("Настройки", self)
         self.настройки.setGeometry(0, 600, 100, 100)
         self.настройки.setToolTip("Нажмите для открытия настроек")
-        self.настройки.clicked.connect(self.привтун)
+        self.настройки.clicked.connect(self.открыть_новое_окно)
         self.настройки.setFont(QFont("Georgia", 10))
         self.настройки.setStyleSheet("""
                     background-color:  #201f25;
@@ -149,17 +237,6 @@ class ОсновноеОкно(QMainWindow):
         self.ТрафикЗначение.setGeometry(130, 225, 150, 25)
         self.ТрафикЗначение.setFont(QFont("Georgia ", 15))
         self.ТрафикЗначение.setVisible(False)
-
-
-
-
-
-
-
-
-
-
-
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
