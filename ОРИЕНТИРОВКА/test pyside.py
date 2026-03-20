@@ -67,7 +67,7 @@ class ОсновноеОкно(QMainWindow):
         super().__init__()
         self.setFixedSize(QSize(400, 700))  # Настраиваем СЕБЯ
         self.setWindowTitle("гойда впн")
-        self.setStyleSheet("background-color: #26252d")
+        self.setStyleSheet("background-color: #26252d ")
         self.подключение = QPushButton("Отключено", self)
         self.подключение.setGeometry(100, 450, 200, 200)
         self.подключение.setToolTip("Нажмите для подключения")
@@ -86,7 +86,7 @@ class ОсновноеОкно(QMainWindow):
         self.настройки.clicked.connect(self.привтун)
         self.настройки.setFont(QFont("Georgia", 10))
         self.настройки.setStyleSheet("""
-                    background-color:  #262b2c;
+                    background-color:  #201f25;
                     color: white;
                     border-radius: 25px;
                 """)
@@ -98,7 +98,7 @@ class ОсновноеОкно(QMainWindow):
         self.статистика.clicked.connect(self.привтун)
         self.статистика.setFont(QFont("Georgia", 10))
         self.статистика.setStyleSheet("""
-                            background-color:  #262b2c;
+                            background-color:  #201f25;
                             color: white;
                             border-radius: 25px;
                         """)
