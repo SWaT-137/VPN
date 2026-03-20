@@ -10,29 +10,29 @@ class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("VPN")
-        self.setGeometry(100, 100, 220, 220)
+        self.setGeometry(100, 100, 220, 280)
         self.setStyleSheet("background-color: #2F4F4F;")
-        
         # Загружаем сохраненные настройки
         self.load_settings()
         self.create_info_labels()
-        
         # Создаем кнопку "Подключиться"
         self.button = QPushButton("Подключиться", self)
-        self.button.setGeometry(10, 150, 100, 30)
+        self.button.setGeometry(10, 200, 100, 30)
         self.button.setCheckable(True)
         self.button.setChecked(False)
-        self.button.clicked.connect(self.on_button_on)
-        
+        self.button.clicked.connect(self.on_button_on) 
         # Кнопка "Настройка"
         self.button2 = QPushButton("Настройка", self)
-        self.button2.setGeometry(110, 150, 100, 30)
+        self.button2.setGeometry(110, 200, 100, 30)
         self.button2.clicked.connect(self.on_button_settings)
-        
         # Кнопка "Статистика"
         button3 = QPushButton("Статистика", self)
-        button3.setGeometry(50, 180, 100, 30)
-
+        button3.setGeometry(60, 230, 100, 30)
+        self.ping = 30
+        self.speed = 30
+        self.speed1 = 30
+        pakets = 50
+        pakets = 60
     def load_settings(self):
         """Загружает настройки из файла"""
         self.settings = QSettings("MyVPN", "VPNSettings")
@@ -46,22 +46,26 @@ class MainWindow(QWidget):
         title_label = QLabel("Текущие настройки:", self)
         title_label.setGeometry(10, 10, 200, 20)
         title_label.setStyleSheet("color: white; font-size: 14px; font-weight: bold;")
-        
         # Метка для сервера
         self.server_label = QLabel(self)
         self.server_label.setGeometry(10, 35, 200, 20)
         self.server_label.setStyleSheet("color: #4CAF50; font-size: 12px;")
-        
         # Метка для порта
         self.port_label = QLabel(self)
         self.port_label.setGeometry(10, 60, 200, 20)
         self.port_label.setStyleSheet("color: #4CAF50; font-size: 12px;")
-        
         # Статус подключения
         self.status_label = QLabel("Статус: Не подключено", self)
-        self.status_label.setGeometry(10, 85, 200, 20)
+        self.status_label.setGeometry(10, 150, 200, 20)
         self.status_label.setStyleSheet("color: #FFA500; font-size: 12px;")
-        
+        # Пинг
+        self.ping_label = QLabel("Ping: ",self)
+        self.ping_label.setGeometry(10, 95, 200, 20)
+        self.ping_label.setStyleSheet("color: #4CAF50; font-size: 12px;")
+        # Скорость
+        self.speed_label = QLabel("Speed: ",self)
+        self.speed_label.setGeometry(10, 120, 200, 20)
+        self.speed_label.setStyleSheet("color: #4CAF50; font-size: 12px;")
         # Обновляем отображение настроек
         self.update_info_display()
 
@@ -80,6 +84,8 @@ class MainWindow(QWidget):
         if checked:
             self.button.setText("Включено")
             self.status_label.setText("Статус: Подключено")
+            self.ping_label.setText(f"Ping: {self.ping} ms")
+            self.speed_label.setText(f"Speed: ↓ {self.speed} | ↑ {self.speed1}")
             self.status_label.setStyleSheet("color: #4CAF50; font-size: 12px;")
             if self.server and self.port:
                 print(f"Подключение к {self.server}:{self.port}")
@@ -88,6 +94,8 @@ class MainWindow(QWidget):
         else:
             self.button.setText("Отключено")
             self.status_label.setText("Статус: Не подключено")
+            self.ping_label.setText(f"Ping:")
+            self.speed_label.setText(f"Speed:")
             self.status_label.setStyleSheet("color: #FFA500; font-size: 12px;")
     
     # Настройки
