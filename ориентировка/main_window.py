@@ -7,16 +7,18 @@ from PySide6.QtGui import QColor, QPalette
 from PySide6.QtCore import Slot, QSettings
 
 class MainWindow(QWidget):
+    traficZnachenie = 120  # временные переменные
+    Format = "Мб"
+    spedZnachenie = 2
+    FormatSped = "Мб/C"
+    podklZnach = 300
+    VremesZnachenie = 60
     def __init__(self):
         super().__init__()
         self.setWindowTitle("VPN")
         self.setGeometry(100, 100, 220, 280)
         self.setStyleSheet("background-color: #2F4F4F;")
         self.settings = QSettings("MyVPN", "VPNSettings")
-
-
-
-        
         # Загружаем сохраненные настройки
         self.load_settings()
         self.create_info_labels()   
@@ -33,6 +35,7 @@ class MainWindow(QWidget):
         # Кнопка "Статистика"
         button3 = QPushButton("Статистика", self)
         button3.setGeometry(60, 230, 100, 30)
+        button3.clicked.connect(self.open_new_window_stat)
         self.ping = 30
         self.speed = 30
         self.speed1 = 30
@@ -158,7 +161,6 @@ class MainWindow(QWidget):
         # Кнопки 
         self.checkbox = QCheckBox("Включить кнопку",dialog)
         self.checkbox.setGeometry(10, 165, 20, 20)
-        self.checkbox.setChecked(self.checkbox_state)
         self.checkbox.stateChanged.connect(self.on_checkbox_changed)
 
         # Кнопка сохранения
@@ -209,6 +211,43 @@ class MainWindow(QWidget):
         QMessageBox.information(dialog, "Успех", "Настройки сохранены!")
         # Закрываем диалог
         dialog.accept()
+
+    def open_new_window_stat(self):
+        dialog = QDialog(self) #СОздаем окно
+        dialog.setWindowTitle("Статистика")
+        dialog.setGeometry(100, 100, 300, 250)
+        dialog.setStyleSheet("background-color: #2F4F4F;")
+
+        label = QLabel("Всего использовано мб трафика:", dialog) # Создаем лейбл с текстом
+        label.setGeometry(10, 10, 200, 10)
+        label.setStyleSheet("color: white; font-size: 12px;")
+        trafic = QLabel(f"{self.traficZnachenie} {self.Format}", dialog) #Создаем лейбл со значением трафика
+        trafic.setGeometry(210, 10, 200, 10)
+
+        label2 = QLabel("Средняя скорость:", dialog) # Создаем лейбл с текстом
+        label2.setGeometry(10, 60, 200, 20)
+        label2.setStyleSheet("color: white; font-size: 12px;")
+        sped = QLabel(f"{self.spedZnachenie} {self.FormatSped}", dialog)#Создаем лейбл со значением скорости
+        sped.setGeometry(120, 65, 200, 10)
+
+        label3 = QLabel("Количество подключений за 24ч:", dialog)# Создаем лейбл с текстом
+        label3.setGeometry(10, 110, 200, 30)
+        label3.setStyleSheet("color: white; font-size: 12px;")
+        podkl = QLabel(f"{self.podklZnach} раз", dialog)#Создаем лейбл со значением кол-во подключений
+        podkl.setGeometry(210, 120, 200, 10)
+
+        label4 = QLabel("Всего времени проведено: ", dialog)# Создаем лейбл с текстом
+        label4.setGeometry(10, 160, 200, 40)
+        label4.setStyleSheet("color: white; font-size: 12px;")
+        vremes = QLabel(f"{self.VremesZnachenie} минут", dialog)#Создаем лейбл со значением кол-во подключений
+        vremes.setGeometry(180, 175, 200, 10)
+
+
+        cancel_btn = QPushButton("Выход", dialog) # Кнопка выхода
+        cancel_btn.setGeometry(100, 200, 100, 25)
+        cancel_btn.clicked.connect(dialog.reject)
+
+        dialog.exec()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
