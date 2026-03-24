@@ -2,7 +2,7 @@ import sys
 import json
 import os
 from PySide6.QtWidgets import (QApplication, QWidget, QPushButton, QDialog, 
-                               QLabel, QVBoxLayout, QLineEdit, QMessageBox)
+                               QLabel, QVBoxLayout, QLineEdit, QMessageBox,QCheckBox)
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtCore import Slot, QSettings
 
@@ -12,9 +12,14 @@ class MainWindow(QWidget):
         self.setWindowTitle("VPN")
         self.setGeometry(100, 100, 220, 280)
         self.setStyleSheet("background-color: #2F4F4F;")
+        self.settings = QSettings("MyVPN", "VPNSettings")
+
+
+
+        
         # Загружаем сохраненные настройки
         self.load_settings()
-        self.create_info_labels()
+        self.create_info_labels()   
         # Создаем кнопку "Подключиться"
         self.button = QPushButton("Подключиться", self)
         self.button.setGeometry(10, 200, 100, 30)
@@ -31,8 +36,8 @@ class MainWindow(QWidget):
         self.ping = 30
         self.speed = 30
         self.speed1 = 30
-        pakets = 50
-        pakets = 60
+        
+        
     def setup_settings(self):
         """Настройка QSettings для сохранения в файл"""
         # Вариант 1: Сохранение в текущей директории
@@ -41,7 +46,7 @@ class MainWindow(QWidget):
 
     def load_settings(self):
         """Загружает настройки из файла"""
-        self.settings = QSettings("MyVPN", "VPNSettings")
+        
         self.server = self.settings.value("server", "",type=str)
         self.port = self.settings.value("port", "",type=str)
         self.password = self.settings.value("password", "",type=str)
@@ -113,62 +118,69 @@ class MainWindow(QWidget):
     def open_new_window(self):
         dialog = QDialog(self)
         dialog.setWindowTitle("Настройки")
-        dialog.setGeometry(200, 200, 250, 250)  # Увеличил высоту
+        dialog.setGeometry(200, 200, 300, 300)  
         dialog.setStyleSheet("background-color: #2F4F4F;")
-        
-        # Используем абсолютное позиционирование
         # Метка "Сервер"
         label = QLabel("Сервер:", dialog)
         label.setGeometry(10, 10, 100, 20)
         label.setStyleSheet("color: white; font-size: 12px;")
-        
         # Поле для ввода сервера
         self.server_edit = QLineEdit(dialog)
         self.server_edit.setGeometry(10, 30, 220, 25)
         self.server_edit.setPlaceholderText("Введите адрес сервера")
         self.server_edit.setStyleSheet("background-color: white; color: black;")
-        self.server_edit.setText(self.server)  # Устанавливаем сохраненное значение
-        
+        self.server_edit.setText(self.server)  
         # Метка "Порт"
         label2 = QLabel("Порт:", dialog)
         label2.setGeometry(10, 60, 100, 20)
         label2.setStyleSheet("color: white; font-size: 12px;")
-        
+        # Метка "По умолчанию"
+        label4 = QLabel("По умолчанию 443", dialog)
+        label4.setGeometry(100, 60, 110, 20)
+        label4.setStyleSheet("color: white; font-size: 12px;")
         # Поле для ввода порта
         self.port_edit = QLineEdit(dialog)
         self.port_edit.setGeometry(10, 80, 220, 25)
-        self.port_edit.setPlaceholderText("Введите порт")
+        self.port_edit.setPlaceholderText("По умолчанию 443")
         self.port_edit.setStyleSheet("background-color: white; color: black;")
-        self.port_edit.setText(self.port)  # Устанавливаем сохраненное значение
-        
+        self.port_edit.setText(self.port)  
         # Метка "Пароль"
         label3 = QLabel("Пароль:", dialog)
         label3.setGeometry(10, 110, 100, 20)
         label3.setStyleSheet("color: white; font-size: 12px;")
-        
         # Поле для ввода пароля
         self.password_edit = QLineEdit(dialog)
         self.password_edit.setGeometry(10, 130, 220, 25)
         self.password_edit.setPlaceholderText("Введите пароль")
         self.password_edit.setStyleSheet("background-color: white; color: black;")
         self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.password_edit.setText(self.password)  # Устанавливаем сохраненное значение
-        
+        self.password_edit.setText(self.password)  
+        # Кнопки 
+        self.checkbox = QCheckBox("Включить кнопку",dialog)
+        self.checkbox.setGeometry(10, 165, 20, 20)
+        self.checkbox.setChecked(self.checkbox_state)
+        self.checkbox.stateChanged.connect(self.on_checkbox_changed)
+
         # Кнопка сохранения
         self.save_btn = QPushButton("Сохранить", dialog)
-        self.save_btn.setGeometry(10, 165, 100, 25)
+        self.save_btn.setGeometry(10, 273, 100, 25)
         self.save_btn.clicked.connect(lambda: self.save_settings(dialog))
         
         # Кнопка отмены
         cancel_btn = QPushButton("Отмена", dialog)
-        cancel_btn.setGeometry(130, 165, 100, 25)
+        cancel_btn.setGeometry(130, 273, 100, 25)
         cancel_btn.clicked.connect(dialog.reject)
         
         dialog.exec()
-    
+
+    def on_checkbox_changed(self, state):
+        self.button.setEnabled(state == 2)
+
+
     def save_settings(self, dialog):
         """Сохраняет настройки и закрывает окно"""
         # Получаем данные из полей ввода
+
         server = self.server_edit.text()
         port = self.port_edit.text()
         password = self.password_edit.text()
@@ -187,11 +199,13 @@ class MainWindow(QWidget):
         self.settings.setValue("server", server)
         self.settings.setValue("port", port)
         self.settings.setValue("password", password)
-        self.settings.sync()  # Принудительно сохраняем
-        
+        self.settings.sync()  
+        # Сэйв чекбокса
+        self.settings.setValue("checkbox_state", self.checkbox.isChecked())
+
         print(f"Настройки сохранены: Сервер={server}, Порт={port}")
         
-        # Показываем сообщение об успешном сохранении
+        
         QMessageBox.information(dialog, "Успех", "Настройки сохранены!")
         # Закрываем диалог
         dialog.accept()
@@ -202,3 +216,5 @@ if __name__ == "__main__":
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
+
+    
