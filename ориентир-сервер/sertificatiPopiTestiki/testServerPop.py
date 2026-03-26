@@ -1,6 +1,8 @@
+import hashlib
 import ssl
 import asyncio
 import cryptography
+import hmac
 import os
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -13,16 +15,14 @@ buffer_size = 8192
 class Crypto:
     def __init__(self, password: str):
         self.password = password
-        self.salt = b'salt1234567890ab'
-        self.key = self._dervive_key()
 
-    def _dervive_key(self):
+    def _dervive_key(self, salt: bytes):
         password_bytes = self.password.encode('utf-8')
 
         keyTaike = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
             length = 32,
-            salt = self.salt,
+            salt = salt,
             iterations = 100000,
             backend = default_backend()
         )
@@ -34,25 +34,29 @@ class Crypto:
             plaintext = plaintext.encode('utf-8')
 
         iv = os.urandom(12)
+        salt = os.urandom(16)
+        key = self._dervive_key(salt)
         shifr = Cipher(
-            algorithms.AES(self.key),
+            algorithms.AES(key),
             modes.GCM(iv),
             backend=default_backend()
         )
         rashifrovka = shifr.encryptor()
         ciphertext = rashifrovka.update(plaintext) + rashifrovka.finalize()
         tag = rashifrovka.tag
-        result = iv + ciphertext + tag
+        result = salt + iv + ciphertext + tag
         return result
 
     def decrypt(self, data: bytes):
-        if len(data) < 28:
+        if len(data) < 44:
             return b''
-        iv = data[:12]
+        salt = data[:16]
+        iv = data[16:28]
         tag = data[-16:]
-        ciphertext = data[12:-16]
+        ciphertext = data[28:-16]
+        key = self._dervive_key(salt)
         shifrRashifrovki = Cipher(
-            algorithms.AES(self.key),
+            algorithms.AES(key),
             modes.GCM(iv, tag),
             backend = default_backend()
         )
@@ -91,12 +95,12 @@ def create_ssl_context():
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.set_alpn_protocols(['http/1.1'])
     return context
-
+''' базовая хуйня 
 async def handle_client(reader, writer):
     client_addr = writer.get_extra_info('peername')
     print(f"Клинт тута: {client_addr}")
-
     crypto = Crypto("chipopka42")
+
     try:
         while True:
             encrypted_data = await reader.read(buffer_size)
@@ -127,6 +131,82 @@ async def handle_client(reader, writer):
         writer.close()
         await writer.wait_closed()
         print(f"Клиент нетута: {client_addr}")
+'''
+async def proxy_data(src_reader, dst_writer, crypto, direction):
+    try:
+        while True:
+            data = await src_reader.read(buffer_size)
+            if not data:
+                break
+            if direction == "client->target":
+                processed_data = crypto.decrypt(data)
+                print(f"расшифровано колво байт от клиента {len(processed_data)}")
+            else:
+                processed_data = crypto.decrypt(data)
+                print(f"{len(processed_data)} зашифровано для клиента")
+
+            dst_writer.write(processed_data)
+            await dst_writer.drain()
+
+    except ConnectionError:
+        print(f"Соединение закрыто при прокси {direction}")
+    except asyncio.CancelledError:
+        print(f"Прокси-задача {direction}")
+    except Exception as e:
+        print(e)
+async def handle_client(reader, writer):
+    client_addr = writer.get_extra_info('peername')
+    print(f"Клиент туты: {client_addr}")
+    crypto = Crypto("chipopka42")
+
+    try:
+        password_has = await reader.readexactly(32)
+        expected_hash = hashlib.sha256(password_has).digest()
+        if not hmac.compare_digest(expected_hash, password_has):
+            print(f"Неправильный пароль от {client_addr}")
+            return
+        addr_len_bytes = await reader.readexactly(1)
+        addr_len = addr_len_bytes[0]
+
+        addres_bytes = await reader.readexactly(addr_len)
+        address = addres_bytes.decode('utf-8')
+
+        port_bytes = await reader.readexactly(2)
+        port = int.from_bytes(port_bytes, 'big')
+
+        print(f"запрос к {address}:{port}")
+
+        target_reader, target_writer = await asyncio.open_connection(address, port)
+
+        print(f"soedineneie s {address}:{port} установленно")
+
+        zadanka1 = asyncio.create_task(
+            proxy_data(reader, target_writer, crypto, direction="client->target")
+        )
+        zadanka2 = asyncio.create_task(
+            proxy_data(target_reader, writer, crypto, direction="target->clien")
+        )
+
+        await asyncio.wait([zadanka1, zadanka2], return_when=asyncio.FIRST_COMPLETED)
+
+        zadanka1.cancel()
+        zadanka2.cancel()
+
+    except asyncio.IncompleteReadError:
+        print(f" {client_addr} ливнул при чтении заголовка")
+    except Exception as e:
+        print(f"Ошибка при обработке {client_addr}: {e}")
+    finally:
+        try:
+            target_writer.close()
+            await target_writer.wait_closed()
+        except:
+            pass
+        writer.close()
+        await writer.wait_closed()
+        print(f"чел ливнул {client_addr}")
+
+
 
 async def main():
     ssl_context = create_ssl_context()
