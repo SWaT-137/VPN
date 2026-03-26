@@ -7,6 +7,7 @@ from PySide6.QtGui import QColor, QPalette
 from PySide6.QtCore import Slot, QSettings
 
 
+
 class MainWindow(QWidget):
     traficZnachenie = 120
     Format = "Мб"
