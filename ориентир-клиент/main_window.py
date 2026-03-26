@@ -1,8 +1,64 @@
 import sys
 from PySide6.QtWidgets import QApplication, QWidget, QPushButton, QDialog, QLabel, QLineEdit, QMessageBox, QCheckBox
 from PySide6.QtGui import QFont, QPainter, QColor
-from PySide6.QtCore import QSettings, QPropertyAnimation, QEasingCurve, QRectF, Property
+from PySide6.QtCore import QSettings, QPropertyAnimation, QEasingCurve, QRectF, Property, Signal
 
+
+class ToggleSwitch(QWidget):
+    toggled = Signal(bool)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        self.setFixedSize(200, 100)
+        self._checked = False
+        self._position = 0.0
+
+        self.animation = QPropertyAnimation(self, b"position")
+        self.animation.setDuration(200)
+        self.animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
+
+    @Property(float)
+    def position(self):
+        return self._position
+
+    @position.setter
+    def position(self, value):
+        self._position = value
+        self.update()
+
+    @Property(bool)
+    def isChecked(self):
+        return self._checked
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        width = self.width()
+        height = self.height()
+        radius = height // 2
+        circle_size = height - 8
+        max_x = width - circle_size - 4
+        x = 4 + self._position * max_x
+        y = 4
+
+        if self._checked:
+            bg_color = QColor(76, 175, 80)
+        else:
+            bg_color = QColor(200, 200, 200)
+
+        painter.setBrush(bg_color)
+        painter.drawRoundedRect(0, 0, width, height, radius, radius)
+        painter.setBrush(QColor(255, 255, 255))
+        painter.drawEllipse(QRectF(x, y, circle_size, circle_size))
+
+    def mousePressEvent(self, event):
+        self._checked = not self._checked
+        self.animation.stop()
+        self.animation.setStartValue(self._position)
+        self.animation.setEndValue(1.0 if self._checked else 0.0)
+        self.animation.start()
 
 class MainWindow(QWidget):
     traficZnachenie = 120  # временные переменные
@@ -25,22 +81,9 @@ class MainWindow(QWidget):
         self.load_settings()
         self.create_info_labels()
 
-        # Создаем кнопку "Подключиться"
-        self.button = QPushButton("Отключено", self)
-        self.button.setGeometry(50, 150, 100, 30)
-        self.button.setFixedSize(200, 200)
-        self.button.setStyleSheet("""
-            border-radius: 100px;
-            background-color: red;
-            border: none;
-        """)
-        self.button.setCheckable(True)
-        self.button.setChecked(False)
-        self.button.clicked.connect(self.on_button_on)
-
+        #Установка ползунка
         self.toggle_button = ToggleSwitch(self)
-        self.toggle_button.setGeometry(50, 150, 200, 200)
-        self.toggle_button.clicked = lambda: self.on_toggle_changed()
+        self.toggle_button.setGeometry(50, 200, 200, 200)
 
         # Кнопка "Настройка"
         self.button2 = QPushButton("Настройки", self)
@@ -61,10 +104,10 @@ class MainWindow(QWidget):
         self.button4.setGeometry(280, 0, 10, 30)
         self.button4.setFixedSize(20, 50)
         self.button4.setFont(QFont("Segoe UI", 30))
-        self.button4.setStyleSheet("""color:white""")
         self.button4.setStyleSheet("""
         background-color: transparent;
         border: none;
+        color:white
         """)
 
     def setup_settings(self):
@@ -130,31 +173,20 @@ class MainWindow(QWidget):
             self.port_label.setStyleSheet("color: #FFA500; font-size: 20px;")
 
     # Кнопка включения/подключения
-    def on_button_on(self):
-        if self.button.text() == "Отключено":
-            self.button.setText("Подключено")
-            self.button.setStyleSheet("""
-                border-radius: 100px;
-                background-color: green;
-                border: none;
-            """)
+    def on_button_on(self, is_checked):
+        if is_checked:
             self.status_label.setText("Статус: Подключено")
             self.ping_label.setText(f"Ping: {self.ping} ms")
             self.speed_label.setText(f"Speed: ↓ {self.speed} | ↑ {self.speed1}")
             self.status_label.setStyleSheet("color: #4CAF50; font-size: 20px;")
             self.ping_label.setVisible(True)
             self.speed_label.setVisible(True)
+
             if self.server and self.port:
                 print(f"Подключение к {self.server}:{self.port}")
             else:
                 print("Сначала настройте подключение!")
         else:
-            self.button.setText("Отключено")
-            self.button.setStyleSheet("""
-                border-radius: 100px;
-                background-color: red;
-                border: none;
-            """)
             self.status_label.setText("Статус: Не подключено")
             self.ping_label.setText(f"Ping:")
             self.speed_label.setText(f"Speed:")
@@ -307,60 +339,8 @@ class MainWindow(QWidget):
 
         dialog.exec()
 
-class ToggleSwitch(QWidget):
 
-    @property
-    def position(self):
-        return self._position
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
-
-        self.setFixedSize(80, 40)
-        self._checked = False
-        self._position = 0.0
-
-        self.animation = QPropertyAnimation(self, b"position")
-        self.animation.setDuration(200)
-        self.animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
-
-    @Property(float)
-    def position(self):
-        return self._position
-
-    @position.setter
-    def position(self, value):
-        self._position = value
-        self.update()
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-        width = self.width()
-        height = self.height()
-        radius = height // 2
-        circle_size = height - 8
-        max_x = width - circle_size - 4
-        x = 4 + self.position * max_x
-        y = 4
-
-        if self._checked:
-            bg_color = QColor(76, 175, 80)
-        else:
-            bg_color = QColor(200, 200, 200)
-
-        painter.setBrush(bg_color)
-        painter.drawRoundedRect(0, 0, width, height, radius, radius)
-        painter.setBrush(QColor(255, 255, 255))
-        painter.drawEllipse(QRectF(x, y, circle_size, circle_size))
-
-    def mousePressEvent(self, event):
-        self._checked = not self._checked
-        self.animation.stop()
-        self.animation.setStartValue(self.position)
-        self.animation.setEndValue(1.0 if self._checked else 0.0)
-        self.animation.start()
 
 
 
