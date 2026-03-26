@@ -1,7 +1,7 @@
 import sys
 from PySide6.QtWidgets import QApplication, QWidget, QPushButton, QDialog, QLabel, QLineEdit, QMessageBox, QCheckBox
 from PySide6.QtGui import QFont, QPainter, QColor
-from PySide6.QtCore import QSettings, QPropertyAnimation, QEasingCurve, QRectF
+from PySide6.QtCore import QSettings, QPropertyAnimation, QEasingCurve, QRectF, Property
 
 
 class MainWindow(QWidget):
@@ -307,8 +307,11 @@ class MainWindow(QWidget):
 
         dialog.exec()
 
-
 class ToggleSwitch(QWidget):
+
+    @property
+    def position(self):
+        return self._position
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -321,43 +324,44 @@ class ToggleSwitch(QWidget):
         self.animation.setDuration(200)
         self.animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
 
+    @Property(float)
     def position(self):
         return self._position
 
-    def setPosition(self, value):
+    @position.setter
+    def position(self, value):
         self._position = value
         self.update()
 
     def paintEvent(self, event):
         painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         width = self.width()
         height = self.height()
         radius = height // 2
-        margin = 3
-        max_x = width - radius - margin * 2
-        x = margin + self.position() * max_x
+        circle_size = height - 8
+        max_x = width - circle_size - 4
+        x = 4 + self.position * max_x
+        y = 4
 
         if self._checked:
-            bg_color = QColor(0, 0, 0)
-            painter.setBrush(bg_color)
+            bg_color = QColor(76, 175, 80)
         else:
-            bg_color = QColor(255, 0, 0)
-            painter.setBrush(bg_color)
+            bg_color = QColor(200, 200, 200)
 
-        bg_rect = QRectF(0, 0, width, height)
-        painter.drawRoundedRect(bg_rect, radius, radius)
-
+        painter.setBrush(bg_color)
+        painter.drawRoundedRect(0, 0, width, height, radius, radius)
         painter.setBrush(QColor(255, 255, 255))
-        switch_rect = QRectF(x, margin, radius, radius)
-        painter.drawEllipse(switch_rect)
+        painter.drawEllipse(QRectF(x, y, circle_size, circle_size))
 
     def mousePressEvent(self, event):
         self._checked = not self._checked
         self.animation.stop()
-        self.animation.setStartValue(self.position())
+        self.animation.setStartValue(self.position)
         self.animation.setEndValue(1.0 if self._checked else 0.0)
         self.animation.start()
+
 
 
 if __name__ == "__main__":
