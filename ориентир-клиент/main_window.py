@@ -1,10 +1,8 @@
 import sys
-import json
-import os
-from PySide6.QtWidgets import (QApplication, QWidget, QPushButton, QDialog, 
-                               QLabel, QVBoxLayout, QLineEdit, QMessageBox,QCheckBox)
-from PySide6.QtGui import QColor, QPalette
-from PySide6.QtCore import Slot, QSettings
+from PySide6.QtWidgets import QApplication, QWidget, QPushButton, QDialog, QLabel, QLineEdit, QMessageBox, QCheckBox
+from PySide6.QtGui import QFont, QPainter, QColor
+from PySide6.QtCore import QSettings, QPropertyAnimation, QEasingCurve, QRectF, Property
+
 
 class MainWindow(QWidget):
     traficZnachenie = 120  # временные переменные
@@ -13,34 +11,62 @@ class MainWindow(QWidget):
     FormatSped = "Мб/C"
     podklZnach = 300
     VremesZnachenie = 60
+
     def __init__(self):
         super().__init__()
+
         self.setWindowTitle("VPN")
         self.setGeometry(100, 100, 220, 280)
-        self.setStyleSheet("background-color: #2F4F4F;")
+        self.setFixedSize(300, 500)
+        self.setStyleSheet("background-color: #26252d;")
         self.settings = QSettings("MyVPN", "VPNSettings")
+
         # Загружаем сохраненные настройки
         self.load_settings()
-        self.create_info_labels()   
+        self.create_info_labels()
+
         # Создаем кнопку "Подключиться"
-        self.button = QPushButton("Подключиться", self)
-        self.button.setGeometry(10, 200, 100, 30)
+        self.button = QPushButton("Отключено", self)
+        self.button.setGeometry(50, 150, 100, 30)
+        self.button.setFixedSize(200, 200)
+        self.button.setStyleSheet("""
+            border-radius: 100px;
+            background-color: red;
+            border: none;
+        """)
         self.button.setCheckable(True)
         self.button.setChecked(False)
-        self.button.clicked.connect(self.on_button_on) 
+        self.button.clicked.connect(self.on_button_on)
+
+        self.toggle_button = ToggleSwitch(self)
+        self.toggle_button.setGeometry(50, 150, 200, 200)
+        self.toggle_button.clicked = lambda: self.on_toggle_changed()
+
         # Кнопка "Настройка"
-        self.button2 = QPushButton("Настройка", self)
-        self.button2.setGeometry(110, 200, 100, 30)
+        self.button2 = QPushButton("Настройки", self)
+        self.button2.setGeometry(150, 390, 100, 30)
+        self.button2.setFixedSize(125, 50)
         self.button2.clicked.connect(self.on_button_settings)
+
         # Кнопка "Статистика"
         button3 = QPushButton("Статистика", self)
-        button3.setGeometry(60, 230, 100, 30)
+        button3.setGeometry(25, 390, 100, 30)
+        button3.setFixedSize(125, 50)
         button3.clicked.connect(self.open_new_window_stat)
         self.ping = 30
         self.speed = 30
         self.speed1 = 30
-        
-        
+
+        self.button4 = QPushButton("⋮", self)
+        self.button4.setGeometry(280, 0, 10, 30)
+        self.button4.setFixedSize(20, 50)
+        self.button4.setFont(QFont("Segoe UI", 30))
+        self.button4.setStyleSheet("""color:white""")
+        self.button4.setStyleSheet("""
+        background-color: transparent;
+        border: none;
+        """)
+
     def setup_settings(self):
         """Настройка QSettings для сохранения в файл"""
         # Вариант 1: Сохранение в текущей директории
@@ -49,37 +75,45 @@ class MainWindow(QWidget):
 
     def load_settings(self):
         """Загружает настройки из файла"""
-        
-        self.server = self.settings.value("server", "",type=str)
-        self.port = self.settings.value("port", "",type=str)
-        self.password = self.settings.value("password", "",type=str)
+
+        self.server = self.settings.value("server", "", type=str)
+        self.port = self.settings.value("port", "", type=str)
+        self.password = self.settings.value("password", "", type=str)
         print(f"Загружены настройки: сервер={self.server}, порт={self.port}")
+
     def create_info_labels(self):
         """Создает метки для отображения информации о настройках"""
-        # Заголовок
-        title_label = QLabel("Текущие настройки:", self)
-        title_label.setGeometry(10, 10, 200, 20)
-        title_label.setStyleSheet("color: white; font-size: 14px; font-weight: bold;")
-        # Метка для сервера
-        self.server_label = QLabel(self)
-        self.server_label.setGeometry(10, 35, 200, 20)
-        self.server_label.setStyleSheet("color: #4CAF50; font-size: 12px;")
-        # Метка для порта
-        self.port_label = QLabel(self)
-        self.port_label.setGeometry(10, 60, 200, 20)
-        self.port_label.setStyleSheet("color: #4CAF50; font-size: 12px;")
+
         # Статус подключения
         self.status_label = QLabel("Статус: Не подключено", self)
-        self.status_label.setGeometry(10, 150, 200, 20)
-        self.status_label.setStyleSheet("color: #FFA500; font-size: 12px;")
+        self.status_label.setGeometry(10, 10, 200, 20)
+        self.status_label.setFixedSize(225, 30)
+        self.status_label.setStyleSheet("color: #FFA500; font-size: 20px;")
+
+        # Метка для сервера
+        self.server_label = QLabel(self)
+        self.server_label.setGeometry(10, 50, 200, 20)
+        self.server_label.setFixedSize(225, 35)
+        self.server_label.setStyleSheet("color: #4CAF50; font-size: 12px;")
+
+        # Метка для порта
+        self.port_label = QLabel(self)
+        self.port_label.setGeometry(10, 100, 200, 20)
+        self.port_label.setFixedSize(225, 35)
+        self.port_label.setStyleSheet("color: #4CAF50; font-size: 12px;")
+
         # Пинг
-        self.ping_label = QLabel("Ping: ",self)
-        self.ping_label.setGeometry(10, 95, 200, 20)
-        self.ping_label.setStyleSheet("color: #4CAF50; font-size: 12px;")
+        self.ping_label = QLabel("Ping: ", self)
+        self.ping_label.setGeometry(65, 350, 200, 20)
+        self.ping_label.setFixedSize(225, 35)
+        self.ping_label.setVisible(False)
+
         # Скорость
-        self.speed_label = QLabel("Speed: ",self)
-        self.speed_label.setGeometry(10, 120, 200, 20)
-        self.speed_label.setStyleSheet("color: #4CAF50; font-size: 12px;")
+        self.speed_label = QLabel("Speed: ", self)
+        self.speed_label.setGeometry(150, 350, 200, 20)
+        self.speed_label.setFixedSize(100, 35)
+        self.speed_label.setVisible(False)
+
         # Обновляем отображение настроек
         self.update_info_display()
 
@@ -88,78 +122,103 @@ class MainWindow(QWidget):
         if self.server and self.port:
             self.server_label.setText(f"🌐 Сервер: {self.server}")
             self.port_label.setText(f"🔌 Порт: {self.port}")
+
         else:
             self.server_label.setText("🌐 Сервер: не настроен")
             self.port_label.setText("🔌 Порт: не настроен")
-            self.server_label.setStyleSheet("color: #FFA500; font-size: 12px;")
-            self.port_label.setStyleSheet("color: #FFA500; font-size: 12px;")
+            self.server_label.setStyleSheet("color: #FFA500; font-size: 20px;")
+            self.port_label.setStyleSheet("color: #FFA500; font-size: 20px;")
+
     # Кнопка включения/подключения
-    def on_button_on(self, checked):
-        if checked:
-            self.button.setText("Включено")
+    def on_button_on(self):
+        if self.button.text() == "Отключено":
+            self.button.setText("Подключено")
+            self.button.setStyleSheet("""
+                border-radius: 100px;
+                background-color: green;
+                border: none;
+            """)
             self.status_label.setText("Статус: Подключено")
             self.ping_label.setText(f"Ping: {self.ping} ms")
             self.speed_label.setText(f"Speed: ↓ {self.speed} | ↑ {self.speed1}")
-            self.status_label.setStyleSheet("color: #4CAF50; font-size: 12px;")
+            self.status_label.setStyleSheet("color: #4CAF50; font-size: 20px;")
+            self.ping_label.setVisible(True)
+            self.speed_label.setVisible(True)
             if self.server and self.port:
                 print(f"Подключение к {self.server}:{self.port}")
             else:
                 print("Сначала настройте подключение!")
         else:
             self.button.setText("Отключено")
+            self.button.setStyleSheet("""
+                border-radius: 100px;
+                background-color: red;
+                border: none;
+            """)
             self.status_label.setText("Статус: Не подключено")
             self.ping_label.setText(f"Ping:")
             self.speed_label.setText(f"Speed:")
-            self.status_label.setStyleSheet("color: #FFA500; font-size: 12px;")
-    
+            self.status_label.setStyleSheet("color: #FFA500; font-size: 20px;")
+            self.ping_label.setVisible(False)
+            self.speed_label.setVisible(False)
+
     # Настройки
     def on_button_settings(self):
         print("Кнопка 'Настройка' нажата")
         self.open_new_window()
-    
+
     # Открытие нового окна
     def open_new_window(self):
         dialog = QDialog(self)
         dialog.setWindowTitle("Настройки")
-        dialog.setGeometry(200, 200, 300, 300)  
-        dialog.setStyleSheet("background-color: #2F4F4F;")
+        dialog.setGeometry(200, 200, 300, 300)
+        dialog.setFixedSize(240, 300)
+        dialog.setStyleSheet("background-color: #26252d;")
+
         # Метка "Сервер"
         label = QLabel("Сервер:", dialog)
         label.setGeometry(10, 10, 100, 20)
         label.setStyleSheet("color: white; font-size: 12px;")
+
         # Поле для ввода сервера
         self.server_edit = QLineEdit(dialog)
         self.server_edit.setGeometry(10, 30, 220, 25)
         self.server_edit.setPlaceholderText("Введите адрес сервера")
         self.server_edit.setStyleSheet("background-color: white; color: black;")
-        self.server_edit.setText(self.server)  
+        self.server_edit.setText(self.server)
+
         # Метка "Порт"
         label2 = QLabel("Порт:", dialog)
         label2.setGeometry(10, 60, 100, 20)
         label2.setStyleSheet("color: white; font-size: 12px;")
+
         # Метка "По умолчанию"
         label4 = QLabel("По умолчанию 443", dialog)
         label4.setGeometry(100, 60, 110, 20)
         label4.setStyleSheet("color: white; font-size: 12px;")
+
         # Поле для ввода порта
         self.port_edit = QLineEdit(dialog)
         self.port_edit.setGeometry(10, 80, 220, 25)
         self.port_edit.setPlaceholderText("По умолчанию 443")
         self.port_edit.setStyleSheet("background-color: white; color: black;")
-        self.port_edit.setText(self.port)  
+        self.port_edit.setText(self.port)
+
         # Метка "Пароль"
         label3 = QLabel("Пароль:", dialog)
         label3.setGeometry(10, 110, 100, 20)
         label3.setStyleSheet("color: white; font-size: 12px;")
+
         # Поле для ввода пароля
         self.password_edit = QLineEdit(dialog)
         self.password_edit.setGeometry(10, 130, 220, 25)
         self.password_edit.setPlaceholderText("Введите пароль")
         self.password_edit.setStyleSheet("background-color: white; color: black;")
         self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.password_edit.setText(self.password)  
-        # Кнопки 
-        self.checkbox = QCheckBox("Включить кнопку",dialog)
+        self.password_edit.setText(self.password)
+
+        # Кнопки
+        self.checkbox = QCheckBox("Включить кнопку", dialog)
         self.checkbox.setGeometry(10, 165, 20, 20)
         self.checkbox.stateChanged.connect(self.on_checkbox_changed)
 
@@ -167,17 +226,16 @@ class MainWindow(QWidget):
         self.save_btn = QPushButton("Сохранить", dialog)
         self.save_btn.setGeometry(10, 273, 100, 25)
         self.save_btn.clicked.connect(lambda: self.save_settings(dialog))
-        
+
         # Кнопка отмены
         cancel_btn = QPushButton("Отмена", dialog)
         cancel_btn.setGeometry(130, 273, 100, 25)
         cancel_btn.clicked.connect(dialog.reject)
-        
+
         dialog.exec()
 
     def on_checkbox_changed(self, state):
         self.button.setEnabled(state == 2)
-
 
     def save_settings(self, dialog):
         """Сохраняет настройки и закрывает окно"""
@@ -186,74 +244,129 @@ class MainWindow(QWidget):
         server = self.server_edit.text()
         port = self.port_edit.text()
         password = self.password_edit.text()
-        
+
         # Проверяем, что поля не пустые
         if not server or not port or not password:
             QMessageBox.warning(dialog, "Предупреждение", "Заполните все поля!")
             return
-        
+
         # Сохраняем настройки
         self.server = server
         self.port = port
         self.password = password
-        
+
         # Сохраняем в QSettings
         self.settings.setValue("server", server)
         self.settings.setValue("port", port)
         self.settings.setValue("password", password)
-        self.settings.sync()  
+        self.settings.sync()
         # Сэйв чекбокса
         self.settings.setValue("checkbox_state", self.checkbox.isChecked())
 
         print(f"Настройки сохранены: Сервер={server}, Порт={port}")
-        
-        
+
         QMessageBox.information(dialog, "Успех", "Настройки сохранены!")
         # Закрываем диалог
         dialog.accept()
 
     def open_new_window_stat(self):
-        dialog = QDialog(self) #СОздаем окно
+        dialog = QDialog(self)  # Создаем окно
         dialog.setWindowTitle("Статистика")
         dialog.setGeometry(100, 100, 300, 250)
-        dialog.setStyleSheet("background-color: #2F4F4F;")
+        dialog.setFixedSize(275, 250)
+        dialog.setStyleSheet("background-color: #26252d;")
 
-        label = QLabel("Всего использовано мб трафика:", dialog) # Создаем лейбл с текстом
+        label = QLabel("Всего использовано мб трафика:", dialog)  # Создаем лейбл с текстом
         label.setGeometry(10, 10, 200, 10)
         label.setStyleSheet("color: white; font-size: 12px;")
-        trafic = QLabel(f"{self.traficZnachenie} {self.Format}", dialog) #Создаем лейбл со значением трафика
+        trafic = QLabel(f"{self.traficZnachenie} {self.Format}", dialog)  # Создаем лейбл со значением трафика
         trafic.setGeometry(210, 10, 200, 10)
 
-        label2 = QLabel("Средняя скорость:", dialog) # Создаем лейбл с текстом
+        label2 = QLabel("Средняя скорость:", dialog)  # Создаем лейбл с текстом
         label2.setGeometry(10, 60, 200, 20)
         label2.setStyleSheet("color: white; font-size: 12px;")
-        sped = QLabel(f"{self.spedZnachenie} {self.FormatSped}", dialog)#Создаем лейбл со значением скорости
+        sped = QLabel(f"{self.spedZnachenie} {self.FormatSped}", dialog)  # Создаем лейбл со значением скорости
         sped.setGeometry(120, 65, 200, 10)
 
-        label3 = QLabel("Количество подключений за 24ч:", dialog)# Создаем лейбл с текстом
+        label3 = QLabel("Количество подключений за 24ч:", dialog)  # Создаем лейбл с текстом
         label3.setGeometry(10, 110, 200, 30)
         label3.setStyleSheet("color: white; font-size: 12px;")
-        podkl = QLabel(f"{self.podklZnach} раз", dialog)#Создаем лейбл со значением кол-во подключений
-        podkl.setGeometry(210, 120, 200, 10)
+        podkl = QLabel(f"{self.podklZnach} раз", dialog)  # Создаем лейбл со значением кол-во подключений
+        podkl.setGeometry(210, 115, 200, 10)
+        podkl.setFixedSize(50, 20)
 
-        label4 = QLabel("Всего времени проведено: ", dialog)# Создаем лейбл с текстом
+        label4 = QLabel("Всего времени проведено: ", dialog)  # Создаем лейбл с текстом
         label4.setGeometry(10, 160, 200, 40)
         label4.setStyleSheet("color: white; font-size: 12px;")
-        vremes = QLabel(f"{self.VremesZnachenie} минут", dialog)#Создаем лейбл со значением кол-во подключений
+        vremes = QLabel(f"{self.VremesZnachenie} минут", dialog)  # Создаем лейбл со значением кол-во подключений
         vremes.setGeometry(180, 175, 200, 10)
 
-
-        cancel_btn = QPushButton("Выход", dialog) # Кнопка выхода
+        cancel_btn = QPushButton("Выход", dialog)  # Кнопка выхода
         cancel_btn.setGeometry(100, 200, 100, 25)
         cancel_btn.clicked.connect(dialog.reject)
 
         dialog.exec()
 
+class ToggleSwitch(QWidget):
+
+    @property
+    def position(self):
+        return self._position
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        self.setFixedSize(80, 40)
+        self._checked = False
+        self._position = 0.0
+
+        self.animation = QPropertyAnimation(self, b"position")
+        self.animation.setDuration(200)
+        self.animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
+
+    @Property(float)
+    def position(self):
+        return self._position
+
+    @position.setter
+    def position(self, value):
+        self._position = value
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        width = self.width()
+        height = self.height()
+        radius = height // 2
+        circle_size = height - 8
+        max_x = width - circle_size - 4
+        x = 4 + self.position * max_x
+        y = 4
+
+        if self._checked:
+            bg_color = QColor(76, 175, 80)
+        else:
+            bg_color = QColor(200, 200, 200)
+
+        painter.setBrush(bg_color)
+        painter.drawRoundedRect(0, 0, width, height, radius, radius)
+        painter.setBrush(QColor(255, 255, 255))
+        painter.drawEllipse(QRectF(x, y, circle_size, circle_size))
+
+    def mousePressEvent(self, event):
+        self._checked = not self._checked
+        self.animation.stop()
+        self.animation.setStartValue(self.position)
+        self.animation.setEndValue(1.0 if self._checked else 0.0)
+        self.animation.start()
+
+
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    app.setStyle("Fusion")
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
 
-    
