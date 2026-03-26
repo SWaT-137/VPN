@@ -96,7 +96,7 @@ def create_ssl_context(certfile, keyfile):
     return context
 #==============Обработчик запросов================
 class MytCPhandler(socketserver.StreamRequestHandler):
-    """ StreamRequestHandler предоставляет:
+    """ StreamRequestHandler предоставляет: 
     - self.request - SSL сокет клиента
     - self.rfile - файлоподобный объект для чтения (буферизированный)
     - self.wfile - файлоподобный объект для записи (буферизированный)
