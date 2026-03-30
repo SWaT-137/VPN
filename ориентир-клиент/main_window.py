@@ -59,6 +59,7 @@ class ToggleSwitch(QWidget):
         self.animation.setStartValue(self._position)
         self.animation.setEndValue(1.0 if self._checked else 0.0)
         self.animation.start()
+        self.toggled.emit(self._checked)
 
 class MainWindow(QWidget):
     traficZnachenie = 120  # временные переменные
@@ -84,6 +85,8 @@ class MainWindow(QWidget):
         #Установка ползунка
         self.toggle_button = ToggleSwitch(self)
         self.toggle_button.setGeometry(50, 200, 200, 200)
+
+        self.toggle_button.toggled.connect(self.on_button_on)
 
         # Кнопка "Настройка"
         self.button2 = QPushButton("Настройки", self)
