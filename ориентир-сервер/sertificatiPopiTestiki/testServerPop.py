@@ -4,6 +4,8 @@ import asyncio
 import cryptography
 import hmac
 import os
+import pytun
+import pyroute2
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
@@ -142,7 +144,7 @@ async def proxy_data(src_reader, dst_writer, crypto, direction):
                 processed_data = crypto.decrypt(data)
                 print(f"расшифровано колво байт от клиента {len(processed_data)}")
             else:
-                processed_data = crypto.decrypt(data)
+                processed_data = crypto.encrypt(data)
                 print(f"{len(processed_data)} зашифровано для клиента")
 
             dst_writer.write(processed_data)
@@ -161,7 +163,7 @@ async def handle_client(reader, writer):
 
     try:
         password_has = await reader.readexactly(32)
-        expected_hash = hashlib.sha256(password_has).digest()
+        expected_hash = hashlib.sha256(password.encode()).digest()
         if not hmac.compare_digest(expected_hash, password_has):
             print(f"Неправильный пароль от {client_addr}")
             return
@@ -184,7 +186,7 @@ async def handle_client(reader, writer):
             proxy_data(reader, target_writer, crypto, direction="client->target")
         )
         zadanka2 = asyncio.create_task(
-            proxy_data(target_reader, writer, crypto, direction="target->clien")
+            proxy_data(target_reader, writer, crypto, direction="target->client")
         )
 
         await asyncio.wait([zadanka1, zadanka2], return_when=asyncio.FIRST_COMPLETED)
