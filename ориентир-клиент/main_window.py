@@ -1,5 +1,7 @@
 import sys
-from PySide6.QtWidgets import QApplication, QWidget, QPushButton, QDialog, QLabel, QLineEdit, QMessageBox, QCheckBox, QMenu
+import os
+import json
+from PySide6.QtWidgets import QApplication, QWidget, QPushButton, QDialog, QLabel, QLineEdit, QMenu
 from PySide6.QtGui import QFont, QPainter, QColor, QAction, QPen, Qt
 from PySide6.QtCore import QSettings, QPropertyAnimation, QEasingCurve, QRectF, Property, Signal, QPoint
 
@@ -39,10 +41,10 @@ class ToggleSwitch(QWidget):
         width = self.width()
         height = self.height()
         radius = height // 2
-        circle_size = height - 8
-        max_x = width - circle_size - 4
-        x = 4 + self._position * max_x
-        y = 4
+        circle_size = height - 12
+        max_x = width - circle_size - 6
+        x = 6 + self._position * max_x
+        y = 6
 
         if self._checked:
             bg_color = QColor(76, 175, 80)
@@ -76,11 +78,15 @@ class MainWindow(QWidget):
         self.speed = 30
         self.speed1 = 30
 
+        self.settings_file = "settings.json"
+        self.server = ""
+        self.port = 443
+        self.password = ""
+
         self.setWindowTitle("VPN")
         self.setGeometry(100, 100, 220, 280)
         self.setFixedSize(300, 500)
         self.setStyleSheet("background-color: #26252d;")
-        self.settings = QSettings("MyVPN", "VPNSettings")
 
         #Установка ползунка
         self.toggle_button = ToggleSwitch(self)
@@ -122,6 +128,32 @@ class MainWindow(QWidget):
         self.speed_label.setGeometry(150, 350, 200, 20)
         self.speed_label.setFixedSize(100, 35)
         self.speed_label.setVisible(False)
+
+        self.load_settings()
+
+
+    def load_settings(self):
+        if os.path.exists(self.settings_file):
+            print("Файл существует")
+        else:
+            print("Файл не существует")
+
+        with open(self.settings_file, "r", encoding='utf 8') as f:
+            data = json.load(f)
+
+        self.server = data["server"]
+        self.port = data["port"]
+        self.password = data["password"]
+
+    def save_settings(self):
+        data_save = {
+            "server": self.server,
+            "port": self.port,
+            "password": self.password
+        }
+
+        with open(self.settings_file, "r", encoding='utf 8') as f:
+            json.dump(data_save, f, ensure_ascii=False, indent=4)
 
 
     # Кнопка включения/подключения
@@ -165,7 +197,9 @@ class MainWindow(QWidget):
         # Поле для ввода сервера
         self.server_edit = QLineEdit(dialog)
         self.server_edit.setGeometry(10, 30, 220, 25)
+        self.server_edit.setText(self.server)
         self.server_edit.setPlaceholderText("Введите адрес сервера")
+        self.server_edit.setText(self.server)
         self.server_edit.setStyleSheet("background-color: white; color: black;")
 
         # Метка "Порт"
@@ -197,57 +231,14 @@ class MainWindow(QWidget):
         self.password_edit.setStyleSheet("background-color: white; color: black;")
         self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
 
-        # Кнопки
-        self.checkbox = QCheckBox("Включить кнопку", dialog)
-        self.checkbox.setGeometry(10, 165, 20, 20)
-        self.checkbox.stateChanged.connect(self.on_checkbox_changed)
+        self.save_button = QPushButton(dialog)
+        self.save_button.setText("Сохранить")
+        self.save_button.setGeometry(10, 170, 220, 25)
+        self.save_button.setFixedSize(100, 40)
+        self.save_button.clicked.connect(self.save_settings)
 
-        # Кнопка сохранения
-        self.save_btn = QPushButton("Сохранить", dialog)
-        self.save_btn.setGeometry(10, 273, 100, 25)
-        self.save_btn.clicked.connect(lambda: self.save_settings(dialog))
-
-        # Кнопка отмены
-        cancel_btn = QPushButton("Отмена", dialog)
-        cancel_btn.setGeometry(130, 273, 100, 25)
-        cancel_btn.clicked.connect(dialog.reject)
 
         dialog.exec()
-
-    def on_checkbox_changed(self, state):
-        self.button.setEnabled(state == 2)
-
-    def save_settings(self, dialog):
-        """Сохраняет настройки и закрывает окно"""
-        # Получаем данные из полей ввода
-
-        server = self.server_edit.text()
-        port = self.port_edit.text()
-        password = self.password_edit.text()
-
-        # Проверяем, что поля не пустые
-        if not server or not port or not password:
-            QMessageBox.warning(dialog, "Предупреждение", "Заполните все поля!")
-            return
-
-        # Сохраняем настройки
-        self.server = server
-        self.port = port
-        self.password = password
-
-        # Сохраняем в QSettings
-        self.settings.setValue("server", server)
-        self.settings.setValue("port", port)
-        self.settings.setValue("password", password)
-        self.settings.sync()
-        # Сэйв чекбокса
-        self.settings.setValue("checkbox_state", self.checkbox.isChecked())
-
-        print(f"Настройки сохранены: Сервер={server}, Порт={port}")
-
-        QMessageBox.information(dialog, "Успех", "Настройки сохранены!")
-        # Закрываем диалог
-        dialog.accept()
 
     def open_new_window_stat(self):
         dialog = QDialog(self)  # Создаем окно
