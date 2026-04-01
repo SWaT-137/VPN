@@ -21,11 +21,10 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.backends import default_backend
 
+# Trojan протокол
+from protocol import TrojanProtocol, FakeWebServer
 
-# ============================================================================
-# НАСТРОЙКИ
-# ============================================================================
-
+# Нитры
 HOST = "0.0.0.0"
 PORT = 443
 PASSWORD = "mysecretpassword123"
@@ -34,12 +33,7 @@ KEYFILE = "server.key"
 TUN_NAME = "VPNServer"
 VPN_SERVER_IP = "10.8.0.1"
 VPN_NETMASK = "255.255.255.0"
-
-
-# ============================================================================
-# ЗАГРУЗКА WINTUN.DLL
-# ============================================================================
-
+# загрузка WINTUN.DLL
 class Wintun:
     """Обёртка для работы с wintun.dll через ctypes"""
     
@@ -101,14 +95,11 @@ class Wintun:
     def close_adapter(self, handle):
         self.WintunCloseAdapter(handle)
 
-
-# ============================================================================
-# КРИПТОГРАФИЯ
-# ============================================================================
+# крипта,деньги
 
 class CryptoEngine:
     def __init__(self, password: str):
-        # ФИКСИРОВАННАЯ соль для теста (в реальном проекте используйте случайную и передавайте клиенту)
+        # фиксированая соль, 
         self.salt = b'\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f'
         
         kdf = PBKDF2HMAC(
@@ -128,11 +119,7 @@ class CryptoEngine:
     def decrypt(self, data: bytes, nonce: bytes) -> bytes:
         return self.cipher.decrypt(nonce, data, None)
 
-
-# ============================================================================
-# TUN ИНТЕРФЕЙС
-# ============================================================================
-
+# TUN хуйня
 class TUNInterface:
     def __init__(self, name: str, ip: str, netmask: str):
         self.name = name
@@ -188,11 +175,7 @@ class TUNInterface:
             self.wintun.WintunCloseAdapter(self.handle)
             self.handle = None
 
-
-# ============================================================================
-# ОБРАБОТЧИК КЛИЕНТА (в отдельном потоке)
-# ============================================================================
-
+# обрабатываем клиента
 class ClientHandler:
     """Обрабатывает одного клиента в отдельном потоке"""
     
@@ -202,27 +185,38 @@ class ClientHandler:
         self.vpn_server = vpn_server
         self.client_ip = None
         self.running = True
+        self.trojan_protocol = TrojanProtocol(PASSWORD)
+        self.fake_web_server = FakeWebServer()
+    
+    def _trojan_authenticate(self) -> bool:
+        """Аутентификация по Trojan протоколу"""
+        try:
+            if self.trojan_protocol.authenticate_client(self.ssl_sock):
+                print(f"[+] Trojan аутентификация успешна от {self.addr}")
+                return True
+            else:
+                print(f"[WEB] Неавторизованный запрос от {self.addr}, перенаправляем на веб-сервер")
+                self.fake_web_server.serve_fake_response(self.ssl_sock)
+                return False
+        except Exception as e:
+            print(f"[-] Ошибка Trojan аутентификации: {e}")
+            return False
     
     def run(self):
         """Основной метод обработки клиента"""
         try:
-            # 1. АУТЕНТИФИКАЦИЯ
-            password_hash = self.ssl_sock.recv(32)
-            expected_hash = hashlib.sha256(PASSWORD.encode()).digest()
-            
-            if len(password_hash) != 32 or password_hash != expected_hash:
-                print(f"[-] Ошибка аутентификации от {self.addr}")
-                self.ssl_sock.close()
+            #TROJAN аунт
+            if not self._trojan_authenticate():
                 return
             
             print(f"[+] Аутентификация успешна от {self.addr}")
             
-            # 2. ВЫДЕЛЯЕМ IP
+            # выделка IP
             with self.vpn_server.ip_lock:
                 self.client_ip = f"10.8.0.{self.vpn_server.next_ip}"
                 self.vpn_server.next_ip += 1
             
-            # 3. РЕГИСТРИРУЕМ КЛИЕНТА
+            # регистрация
             with self.vpn_server.clients_lock:
                 self.vpn_server.clients[self.client_ip] = {
                     'socket': self.ssl_sock,
@@ -230,11 +224,11 @@ class ClientHandler:
                     'last_activity': time.time()
                 }
             
-            # 4. ОТПРАВЛЯЕМ IP КЛИЕНТУ
+            # отправляем IP клиентику
             self.ssl_sock.send(self.client_ip.encode())
             print(f"[+] Клиент {self.addr[0]}:{self.addr[1]} -> {self.client_ip}")
             
-            # 5. ОСНОВНОЙ ЦИКЛ ПРИЁМА ДАННЫХ
+            # основной цикл приемки
             while self.running and self.vpn_server.running:
                 try:
                     self.ssl_sock.settimeout(60)
@@ -286,11 +280,7 @@ class ClientHandler:
             except:
                 pass
 
-
-# ============================================================================
-# ГЛАВНЫЙ СЕРВЕР
-# ============================================================================
-
+# важная часть
 class VPNServer:
     def __init__(self):
         self.running = True
@@ -369,7 +359,7 @@ class VPNServer:
                 raw_sock, addr = self.server_sock.accept()
                 print(f"[*] Принято соединение от {addr}, выполняем SSL handshake...")
                 
-                # 2. ВЫПОЛНЯЕМ SSL HANDSHAKE (ВАЖНО: после accept!)
+                # 2. выполняем ssl рукопожатие (ВАЖНО: после accept!)
                 ssl_sock = self.context.wrap_socket(raw_sock, server_side=True)
                 print(f"[+] SSL handshake завершён для {addr}")
                 
@@ -408,11 +398,7 @@ class VPNServer:
         self.tun.close()
         
         print("[+] Сервер остановлен")
-
-
-# ============================================================================
 # ГЕНЕРАЦИЯ SSL СЕРТИФИКАТА
-# ============================================================================
 
 def generate_ssl_cert():
     from cryptography import x509
@@ -465,7 +451,7 @@ def generate_ssl_cert():
 
 
 # ============================================================================
-# ПРОВЕРКА ПРАВ АДМИНИСТРАТОРА
+# проверка прав
 # ============================================================================
 
 def check_admin():
