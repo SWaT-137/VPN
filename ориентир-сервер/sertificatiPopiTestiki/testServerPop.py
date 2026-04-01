@@ -4,8 +4,10 @@ import asyncio
 import cryptography
 import hmac
 import os
-import pytun
-import pyroute2
+import sys
+import pytun_pmd3 as pytun
+import socket
+import threading
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
@@ -14,6 +16,12 @@ from cryptography.hazmat.backends import default_backend
 port = 443
 password = "chipopka42"
 buffer_size = 8192
+tun_device = None
+VPN_SERVER_IP = "10.8.0.1"
+VPN_CLIENT_NETWORK = "10.8.0.0"
+VPN_NETMASK = "255.255.255.0"
+VPN_MTU = 1400
+
 class Crypto:
     def __init__(self, password: str):
         self.password = password
@@ -71,6 +79,219 @@ class Crypto:
         except Exception as e:
             print(f"Очибка: {e}")
             return b''
+
+def tunTunTUnsahuyInterface():
+    global tun_device
+    try:
+        tun = pytun.TunTapDevice(flags = pytun.IFF_TUN | pytun.IFF_NO_PI)
+        tun.addr = VPN_SERVER_IP
+        tun.netmask = VPN_NETMASK
+        tun.mtu = VPN_MTU
+        tun.up()
+
+        iface_name = tun.name
+        print(iface_name)
+        print(VPN_SERVER_IP,VPN_NETMASK)
+        print(VPN_MTU)
+
+        tun_device = tun
+
+        return tun
+
+    except Exception as e:
+        print(f"очибка {e}")
+        raise
+
+def setup_routing():
+    import platform
+    import subprocess
+
+    system = platform.system()
+    print(f"Маршрутизируем {system}")
+
+    if system == "Linux":
+        result = subprocess.run(
+            ["sysctl", "-w", "net.ipv4.ip_forward=1"],
+            capture_output=True,
+            text=True
+        )
+        print(f"   IP forwarding: {result.stdout.strip()}")
+
+        result = subprocess.run(
+            ["ip", "route", "show", "default"],
+            capture_output=True,
+            text=True
+        )
+
+        external_iface = None
+        for line in result.stdout.split('\n'):
+            if 'default' in line:
+                parts = line.split()
+                for i, part in enumerate(parts):
+                    if part == 'dev' and i + 1 < len(parts):
+                        external_iface = parts[i + 1]
+                        break
+
+        if not external_iface:
+            external_iface = "eth0"
+            print(f"   ⚠️ Не удалось определить интерфейс, используем {external_iface}")
+        else:
+            print(f"   Внешний интерфейс: {external_iface}")
+
+        subprocess.run([
+            "iptables", "-t", "nat", "-A", "POSTROUTING",
+            "-s", VPN_CLIENT_NETWORK,
+            "-o", external_iface,
+            "-j", "MASQUERADE"
+        ], check=False)
+        print(f"   ✅ NAT настроен (MASQUERADE через {external_iface})")
+
+        subprocess.run([
+            "iptables", "-A", "FORWARD",
+            "-s", VPN_CLIENT_NETWORK,
+            "-j", "ACCEPT"
+        ], check=False)
+
+        subprocess.run([
+            "iptables", "-A", "FORWARD",
+            "-d", VPN_CLIENT_NETWORK,
+            "-j", "ACCEPT"
+        ], check=False)
+
+        print("   ✅ Правила iptables добавлены")
+
+    elif system == "Windows":
+        try:
+            subprocess.run([
+                "netsh", "interface", "ipv4", "set", "global",
+                "forwarding=enabled"
+            ], check=True, capture_output=True)
+            print("   ✅ IP forwarding включен")
+        except subprocess.CalledProcessError as e:
+            print(f"   ⚠️ Не удалось включить IP forwarding: {e}")
+
+        try:
+            result = subprocess.run(
+                ["netsh", "interface", "ipv4", "show", "interfaces"],
+                capture_output=True,
+                text=True
+            )
+
+            external_iface = None
+            for line in result.stdout.split('\n'):
+                if "Connected" in line and "Loopback" not in line:
+                    parts = line.split()
+                    for i, part in enumerate(parts):
+                        if part.isdigit() and i + 1 < len(parts):
+                            iface_name = parts[i + 1]
+                            external_iface = iface_name
+                            break
+                    if external_iface:
+                        break
+
+            if external_iface:
+                print(f"   Внешний интерфейс: {external_iface}")
+            else:
+                print("   ⚠️ Не удалось определить внешний интерфейс")
+        except Exception as e:
+            print(f"   ⚠️ Ошибка при определении интерфейса: {e}")
+
+        try:
+            subprocess.run([
+                "netsh", "routing", "ip", "nat", "add", "interface",
+                "VPN_INTERFACE", "private"
+            ], check=False, capture_output=True)
+            print("   ✅ VPN интерфейс добавлен как private")
+        except Exception:
+            pass
+
+        try:
+            subprocess.run([
+                "netsh", "routing", "ip", "nat", "add", "interface",
+                external_iface, "public"
+            ], check=False, capture_output=True)
+            print(f"   ✅ {external_iface} добавлен как public")
+        except Exception:
+            pass
+
+        try:
+            subprocess.run([
+                "netsh", "routing", "ip", "nat", "add", "address",
+                external_iface, "0.0.0.0", "0.0.0.0"
+            ], check=False, capture_output=True)
+            print("   ✅ NAT адресация настроена")
+        except Exception:
+            pass
+
+        try:
+            subprocess.run([
+                "reg", "add",
+                "HKLM\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters",
+                "/v", "IPEnableRouter",
+                "/t", "REG_DWORD",
+                "/d", "1",
+                "/f"
+            ], check=True, capture_output=True)
+            print("   ✅ Реестр настроен для IP маршрутизации")
+        except subprocess.CalledProcessError as e:
+            print(f"   ⚠️ Не удалось настроить реестр: {e}")
+
+        print("   ℹ️ Для применения настроек требуется перезагрузка Windows")
+        print("   ℹ️ Или вручную включите Routing and Remote Access (RRAS)")
+
+async def client_to_tun(reader, tun, crypto):
+    try:
+        packet_count = 0
+        bytes_total = 0
+        while True:
+            encrypted_data = await reader.read(buffer_size)
+            if not encrypted_data:
+                print(f"клиент ушел")
+                break
+            ip_packet = crypto.decrypt(encrypted_data)
+            if not ip_packet:
+                continue
+            await asyncio.to_thread(tun.write, ip_packet)
+
+            packet_count += 1
+            bytes_total += len(ip_packet)
+
+            if packet_count % 100 == 0:
+                print(f"client->tun: {packet_count} пакеты, {bytes_total} байты")
+    except asyncio.CancelledError:
+        print(f"clientTun отменнеена")
+        raise
+    except ConnectionError as e:
+        print(f"ошибка соединения {e}")
+    except Exception as e:
+        print(f"Очибка {e}")
+
+async def tun_to_client(tun, writer, crypto):
+    try:
+        packet_count = 0
+        bytes_total = 0
+        while True:
+            ip_packet = await asyncio.to_thread(tun.read, tun.mtu)
+            if not ip_packet:
+                print("Интерйфейс закрыт")
+                break
+            encrypted = crypto.encrypt(ip_packet)
+            writer.write(encrypted)
+            await writer.drain()
+
+            packet_count += 1
+            bytes_total += len(encrypted)
+
+            if packet_count % 100 == 0:
+                print(f"client<-tun: {packet_count} пакеты, {bytes_total} байты")
+    except asyncio.CancelledError:
+        print(f"clientTun отменнеена")
+        raise
+    except ConnectionError as e:
+        print(f"ошибка соединения {e}")
+    except Exception as e:
+        print(f"Очибка {e}")
+
 
 
 '''
@@ -156,63 +377,72 @@ async def proxy_data(src_reader, dst_writer, crypto, direction):
         print(f"Прокси-задача {direction}")
     except Exception as e:
         print(e)
+
 async def handle_client(reader, writer):
+    global tun_device
     client_addr = writer.get_extra_info('peername')
-    print(f"Клиент туты: {client_addr}")
-    crypto = Crypto("chipopka42")
-
-    try:
-        password_has = await reader.readexactly(32)
-        expected_hash = hashlib.sha256(password.encode()).digest()
-        if not hmac.compare_digest(expected_hash, password_has):
-            print(f"Неправильный пароль от {client_addr}")
-            return
-        addr_len_bytes = await reader.readexactly(1)
-        addr_len = addr_len_bytes[0]
-
-        addres_bytes = await reader.readexactly(addr_len)
-        address = addres_bytes.decode('utf-8')
-
-        port_bytes = await reader.readexactly(2)
-        port = int.from_bytes(port_bytes, 'big')
-
-        print(f"запрос к {address}:{port}")
-
-        target_reader, target_writer = await asyncio.open_connection(address, port)
-
-        print(f"soedineneie s {address}:{port} установленно")
-
-        zadanka1 = asyncio.create_task(
-            proxy_data(reader, target_writer, crypto, direction="client->target")
-        )
-        zadanka2 = asyncio.create_task(
-            proxy_data(target_reader, writer, crypto, direction="target->client")
-        )
-
-        await asyncio.wait([zadanka1, zadanka2], return_when=asyncio.FIRST_COMPLETED)
-
-        zadanka1.cancel()
-        zadanka2.cancel()
-
-    except asyncio.IncompleteReadError:
-        print(f" {client_addr} ливнул при чтении заголовка")
-    except Exception as e:
-        print(f"Ошибка при обработке {client_addr}: {e}")
-    finally:
+    print(f"Пользователь тут {client_addr}")
+    crypto = Crypto(password)
         try:
-            target_writer.close()
-            await target_writer.wait_closed()
-        except:
-            pass
-        writer.close()
-        await writer.wait_closed()
-        print(f"чел ливнул {client_addr}")
+            password_hash = await reader.readexactly(32)
+            expected_hash = hashlib.sha256(password.encode()).digest()
+
+            if not hmac.compare_digest(expected_hash, password_hash):
+                print(f"неверный пароль от {client_addr}")
+                writer.write(b"Auth failed")
+                await writer.drain()
+                return
+            print(f"клиент туа {client_addr}")
+
+            if tun_device is None:
+                print("Создание тун интерфейса")
+                tun_device = setup_tun_interface()
+
+                setup_routing()
+            else:
+                print(f"{tun_device.name} - этот интерфейс юзаем")
+
+            print(f"запуск сессии для {client_addr}")
+            print(f"клиент получает ip из {VPN_CLIENT_NETWORK}/{VPN_NETMASK}")
+
+            task_client_to_tun = asyncio.create_task(
+                client_to_tun(reader, tun_device, crypto)
+            )
+            task_tun_to_client = asyncio.create_task(
+                tun_to_client(tun_device,writer, crypto)
+            )
+
+            done, pending = await asyncio.wait(
+                [task_client_to_tun, task_tun_to_client],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+            print(f"сесия закрыта для {client_addr}")
+        except asyncio.IncompleteReadError:
+            print(f"пользовал ливнул в овремя авторизации")
+
+        finally:
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except:
+                pass
+
+            print(f"клиент ливнул{client_addr}")
+
+
+
+
 
 
 
 async def main():
     ssl_context = create_ssl_context()
-
     server = await asyncio.start_server(
         handle_client,
         '0.0.0.0',
@@ -221,13 +451,15 @@ async def main():
     )
 
     addrs = ', '.join(str(sock.getsockname()) for sock in server.sockets)
-    print(f"сервер работает на: {addrs}")
-    print(f"Пароль для клиента: {password}")
+    print(addrs)
+    print(port)
+    print(password)
+    print(VPN_CLIENT_NETWORK, VPN_NETMASK)
+    print(VPN_SERVER_IP)
 
 
     async with server:
         await server.serve_forever()
-
 
 if __name__ == '__main__':
     try:
