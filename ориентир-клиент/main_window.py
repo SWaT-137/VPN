@@ -3,7 +3,7 @@ import os
 import json
 from PySide6.QtWidgets import QApplication, QWidget, QPushButton, QDialog, QLabel, QLineEdit, QMenu
 from PySide6.QtGui import QFont, QPainter, QColor, QAction, QPen, Qt
-from PySide6.QtCore import QSettings, QPropertyAnimation, QEasingCurve, QRectF, Property, Signal, QPoint
+from PySide6.QtCore import QPropertyAnimation, QEasingCurve, QRectF, Property, Signal, QPoint
 
 
 class ToggleSwitch(QWidget):
@@ -17,7 +17,7 @@ class ToggleSwitch(QWidget):
         self._position = 0.0
 
         self.animation = QPropertyAnimation(self, b"position")
-        self.animation.setDuration(300)
+        self.animation.setDuration(350)
         self.animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
 
     @Property(float)
@@ -134,16 +134,20 @@ class MainWindow(QWidget):
 
     def load_settings(self):
         if os.path.exists(self.settings_file):
-            print("Файл существует")
+            with open(self.settings_file, "r", encoding='utf-8') as f:
+                data = json.load(f)
+
+            self.server = data["server"]
+            self.port = data["port"]
+            self.password = data["password"]
         else:
-            print("Файл не существует")
-
-        with open(self.settings_file, "r", encoding='utf 8') as f:
-            data = json.load(f)
-
-        self.server = data["server"]
-        self.port = data["port"]
-        self.password = data["password"]
+            data = {
+                "server": "",
+                "port": 443,
+                "password": ""
+            }
+            with open("settings.json", "w", encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=4)
 
     def save_settings(self):
         data_save = {
@@ -152,8 +156,27 @@ class MainWindow(QWidget):
             "password": self.password
         }
 
-        with open(self.settings_file, "r", encoding='utf 8') as f:
+        with open(self.settings_file, "w", encoding='utf-8') as f:
             json.dump(data_save, f, ensure_ascii=False, indent=4)
+
+    def save_dialog_settings(self):
+        new_server = self.server_edit.text()
+        new_port_str = self.port_edit.text()
+        new_password = self.password_edit.text()
+
+        if new_port_str:
+            new_port = int(new_port_str)
+        else:
+            new_port = 443
+
+
+        self.server = new_server
+        self.port = new_port
+        self.password = new_password
+
+        self.save_settings()
+
+        self.dialog.accept()
 
 
     # Кнопка включения/подключения
@@ -183,62 +206,70 @@ class MainWindow(QWidget):
 
     # Открытие нового окна
     def open_new_window(self):
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Настройки")
-        dialog.setGeometry(200, 200, 300, 300)
-        dialog.setFixedSize(240, 300)
-        dialog.setStyleSheet("background-color: #26252d;")
+        self.dialog = QDialog(self)
+        self.dialog.setWindowTitle("Настройки")
+        self.dialog.setGeometry(200, 200, 300, 300)
+        self.dialog.setFixedSize(240, 215)
+        self.dialog.setStyleSheet("background-color: #26252d;")
 
         # Метка "Сервер"
-        label = QLabel("Сервер:", dialog)
+        label = QLabel("Сервер:", self.dialog)
         label.setGeometry(10, 10, 100, 20)
         label.setStyleSheet("color: white; font-size: 12px;")
 
         # Поле для ввода сервера
-        self.server_edit = QLineEdit(dialog)
+        self.server_edit = QLineEdit(self.dialog)
         self.server_edit.setGeometry(10, 30, 220, 25)
+        self.server_edit.setFixedSize(220, 25)
         self.server_edit.setText(self.server)
         self.server_edit.setPlaceholderText("Введите адрес сервера")
-        self.server_edit.setText(self.server)
         self.server_edit.setStyleSheet("background-color: white; color: black;")
 
         # Метка "Порт"
-        label2 = QLabel("Порт:", dialog)
+        label2 = QLabel("Порт:", self.dialog)
         label2.setGeometry(10, 60, 100, 20)
         label2.setStyleSheet("color: white; font-size: 12px;")
 
         # Метка "По умолчанию"
-        label4 = QLabel("По умолчанию 443", dialog)
+        label4 = QLabel("По умолчанию 443", self.dialog)
         label4.setGeometry(100, 60, 110, 20)
         label4.setStyleSheet("color: white; font-size: 12px;")
 
         # Поле для ввода порта
-        self.port_edit = QLineEdit(dialog)
+        self.port_edit = QLineEdit(self.dialog)
         self.port_edit.setGeometry(10, 80, 220, 25)
+        self.port_edit.setFixedSize(220, 25)
+        self.port_edit.setText(str(self.port))
         self.port_edit.setPlaceholderText("По умолчанию 443")
         self.port_edit.setStyleSheet("background-color: white; color: black;")
 
-
         # Метка "Пароль"
-        label3 = QLabel("Пароль:", dialog)
+        label3 = QLabel("Пароль:", self.dialog)
         label3.setGeometry(10, 110, 100, 20)
         label3.setStyleSheet("color: white; font-size: 12px;")
 
         # Поле для ввода пароля
-        self.password_edit = QLineEdit(dialog)
+        self.password_edit = QLineEdit(self.dialog)
         self.password_edit.setGeometry(10, 130, 220, 25)
+        self.password_edit.setFixedSize(220, 25)
+        self.password_edit.setText(self.password)
         self.password_edit.setPlaceholderText("Введите пароль")
         self.password_edit.setStyleSheet("background-color: white; color: black;")
         self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
 
-        self.save_button = QPushButton(dialog)
+        self.save_button = QPushButton(self.dialog)
         self.save_button.setText("Сохранить")
-        self.save_button.setGeometry(10, 170, 220, 25)
-        self.save_button.setFixedSize(100, 40)
-        self.save_button.clicked.connect(self.save_settings)
+        self.save_button.setGeometry(10, 170, 105, 40)
+        self.save_button.setFixedSize(105, 40)
+        self.save_button.clicked.connect(self.save_dialog_settings)
 
+        self.cancel_button = QPushButton(self.dialog)
+        self.cancel_button.setText("Отмена")
+        self.cancel_button.setGeometry(125, 170, 105, 40)
+        self.cancel_button.setFixedSize(105, 40)
+        self.cancel_button.clicked.connect(self.dialog.close)
 
-        dialog.exec()
+        self.dialog.exec()
 
     def open_new_window_stat(self):
         dialog = QDialog(self)  # Создаем окно
