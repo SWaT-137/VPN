@@ -191,12 +191,19 @@ class ClientHandler:
     def _trojan_authenticate(self) -> bool:
         """Аутентификация по Trojan протоколу"""
         try:
-            if self.trojan_protocol.authenticate_client(self.ssl_sock):
+            auth_success, web_data = self.trojan_protocol.authenticate_client(self.ssl_sock)
+            
+            if auth_success:
                 print(f"[+] Trojan аутентификация успешна от {self.addr}")
                 return True
             else:
                 print(f"[WEB] Неавторизованный запрос от {self.addr}, перенаправляем на веб-сервер")
-                self.fake_web_server.serve_fake_response(self.ssl_sock)
+                # Если есть данные для веб-сервера, передаем их
+                if web_data:
+                    # Создаем временный сокет для передачи данных
+                    self.fake_web_server.serve_fake_response_with_data(self.ssl_sock, web_data)
+                else:
+                    self.fake_web_server.serve_fake_response(self.ssl_sock)
                 return False
         except Exception as e:
             print(f"[-] Ошибка Trojan аутентификации: {e}")
