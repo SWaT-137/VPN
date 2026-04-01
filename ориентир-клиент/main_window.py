@@ -97,7 +97,7 @@ class MainWindow(QWidget):
         self.button4 = QPushButton("⋮", self)
         self.button4.setGeometry(285, 0, 10, 30)
         self.button4.setFixedSize(15, 40)
-        self.button4.setFont(QFont("Segoe UI", 30))
+        self.button4.setFont(QFont("Inter", 30))
         self.button4.setStyleSheet("""
         QPushButton {
             background-color: transparent;
@@ -115,18 +115,21 @@ class MainWindow(QWidget):
         self.status_label = QLabel("Отключено", self)
         self.status_label.setGeometry(100, 315, 200, 20)
         self.status_label.setFixedSize(225, 30)
-        self.status_label.setStyleSheet("color: white; font-size: 20px;")
+        self.status_label.setStyleSheet("color: white; font-size: 20px; ")
+        self.status_label.setFont(QFont("Montserrat", 30, QFont.Weight.Medium))
 
         # Пинг
         self.ping_label = QLabel("Ping: ", self)
         self.ping_label.setGeometry(65, 350, 200, 20)
         self.ping_label.setFixedSize(225, 35)
+        self.ping_label.setFont(QFont("JetBrains Mono", 8, QFont.Weight.Medium))
         self.ping_label.setVisible(False)
 
         # Скорость
         self.speed_label = QLabel("Speed: ", self)
         self.speed_label.setGeometry(150, 350, 200, 20)
         self.speed_label.setFixedSize(100, 35)
+        self.speed_label.setFont(QFont("JetBrains Mono", 8, QFont.Weight.Medium))
         self.speed_label.setVisible(False)
 
         self.load_settings()
