@@ -35,7 +35,7 @@ VPN_SERVER_IP = "10.8.0.1"
 VPN_NETMASK = "255.255.255.0"
 # загрузка WINTUN.DLL
 class Wintun:
-    """Обёртка для работы с wintun.dll через ctypes"""
+    """Обёртка для работы с wintun.Sdll через ctypes"""
     
     def __init__(self, dll_path="wintun.dll"):
         if not os.path.isabs(dll_path):

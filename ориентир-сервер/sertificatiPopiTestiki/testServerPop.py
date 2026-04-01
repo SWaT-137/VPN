@@ -383,7 +383,7 @@ async def handle_client(reader, writer):
     client_addr = writer.get_extra_info('peername')
     print(f"Пользователь тут {client_addr}")
     crypto = Crypto(password)
-        try:
+    try:
             password_hash = await reader.readexactly(32)
             expected_hash = hashlib.sha256(password.encode()).digest()
 
@@ -396,7 +396,7 @@ async def handle_client(reader, writer):
 
             if tun_device is None:
                 print("Создание тун интерфейса")
-                tun_device = setup_tun_interface()
+                tun_device = tunTunTUnsahuyInterface()
 
                 setup_routing()
             else:
@@ -423,15 +423,15 @@ async def handle_client(reader, writer):
                 except asyncio.CancelledError:
                     pass
             print(f"сесия закрыта для {client_addr}")
-        except asyncio.IncompleteReadError:
+    except asyncio.IncompleteReadError:
             print(f"пользовал ливнул в овремя авторизации")
 
-        finally:
-            try:
+    finally:
+        try:
                 writer.close()
                 await writer.wait_closed()
-            except:
-                pass
+        except:
+            pass
 
             print(f"клиент ливнул{client_addr}")
 
