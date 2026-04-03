@@ -86,14 +86,7 @@ class TrojanClient:
             print("[-] Таймаут ожидания ответа")
             return None
     
-    def close(self):
-        """Закрытие соединения"""
-        if self.ssl_sock:
-            try:
-                self.ssl_sock.close()
-                print("[+] Соединение закрыто")
-            except:
-                pass
+    
 
 
 def test_trojan_connection():
