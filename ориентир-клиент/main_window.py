@@ -97,7 +97,7 @@ class MainWindow(QWidget):
         self.button4 = QPushButton("⋮", self)
         self.button4.setGeometry(285, 0, 10, 30)
         self.button4.setFixedSize(15, 40)
-        self.button4.setFont(QFont("Inter", 30))
+        self.button4.setFont(QFont("Montserrat", 30))
         self.button4.setStyleSheet("""
         QPushButton {
             background-color: transparent;
@@ -113,23 +113,23 @@ class MainWindow(QWidget):
 
         # Статус подключения
         self.status_label = QLabel("Отключено", self)
-        self.status_label.setGeometry(100, 315, 200, 20)
+        self.status_label.setGeometry(90, 310, 200, 20)
         self.status_label.setFixedSize(225, 30)
         self.status_label.setStyleSheet("color: white; font-size: 20px; ")
         self.status_label.setFont(QFont("Montserrat", 30, QFont.Weight.Medium))
 
         # Пинг
         self.ping_label = QLabel("Ping: ", self)
-        self.ping_label.setGeometry(65, 350, 200, 20)
+        self.ping_label.setGeometry(115, 335, 200, 20)
         self.ping_label.setFixedSize(225, 35)
-        self.ping_label.setFont(QFont("JetBrains Mono", 8, QFont.Weight.Medium))
+        self.ping_label.setFont(QFont("JetBrains Mono", 9, QFont.Weight.Medium))
         self.ping_label.setVisible(False)
 
         # Скорость
         self.speed_label = QLabel("Speed: ", self)
-        self.speed_label.setGeometry(150, 350, 200, 20)
-        self.speed_label.setFixedSize(100, 35)
-        self.speed_label.setFont(QFont("JetBrains Mono", 8, QFont.Weight.Medium))
+        self.speed_label.setGeometry(95, 365, 200, 20)
+        self.speed_label.setFixedSize(150, 20)
+        self.speed_label.setFont(QFont("JetBrains Mono", 9, QFont.Weight.Medium))
         self.speed_label.setVisible(False)
 
         self.load_settings()
@@ -172,7 +172,6 @@ class MainWindow(QWidget):
         else:
             new_port = 443
 
-
         self.server = new_server
         self.port = new_port
         self.password = new_password
@@ -181,25 +180,30 @@ class MainWindow(QWidget):
 
         self.dialog.accept()
 
-
     # Кнопка включения/подключения
     def on_button_on(self, is_checked):
         if is_checked:
             self.status_label.setText("Подключено")
-            self.status_label.setGeometry(90, 315, 200, 20)
+            self.status_label.setGeometry(90, 310, 200, 20)
             self.status_label.setStyleSheet("color: #4CAF50; font-size: 20px;")
+
             self.ping_label.setText(f"Ping: {self.ping} ms")
             self.ping_label.setVisible(True)
+
             self.speed_label.setText(f"Speed: ↓ {self.speed} | ↑ {self.speed1}")
             self.speed_label.setVisible(True)
 
         else:
             self.status_label.setText("Отключено")
-            self.status_label.setGeometry(100, 315, 200, 20)
+            self.status_label.setGeometry(90, 310, 200, 20)
             self.status_label.setStyleSheet("color: white; font-size: 20px;")
+
             self.ping_label.setText(f"Ping:")
+            self.ping_label.setStyleSheet("color: white")
             self.ping_label.setVisible(False)
+
             self.speed_label.setText(f"Speed:")
+            self.speed_label.setStyleSheet("color: white")
             self.speed_label.setVisible(False)
 
     # Настройки
@@ -213,7 +217,7 @@ class MainWindow(QWidget):
         self.dialog.setWindowTitle("Настройки")
         self.dialog.setGeometry(200, 200, 300, 300)
         self.dialog.setFixedSize(240, 215)
-        self.dialog.setStyleSheet("background-color: #26252d;")
+        self.dialog.setStyleSheet("background-color: #26252d; color: white")
 
         # Метка "Сервер"
         label = QLabel("Сервер:", self.dialog)
@@ -264,12 +268,14 @@ class MainWindow(QWidget):
         self.save_button.setText("Сохранить")
         self.save_button.setGeometry(10, 170, 105, 40)
         self.save_button.setFixedSize(105, 40)
+        self.save_button.setStyleSheet("color: white")
         self.save_button.clicked.connect(self.save_dialog_settings)
 
         self.cancel_button = QPushButton(self.dialog)
         self.cancel_button.setText("Отмена")
         self.cancel_button.setGeometry(125, 170, 105, 40)
         self.cancel_button.setFixedSize(105, 40)
+        self.cancel_button.setStyleSheet("color: white")
         self.cancel_button.clicked.connect(self.dialog.close)
 
         self.dialog.exec()
@@ -279,6 +285,7 @@ class MainWindow(QWidget):
         dialog.setWindowTitle("Статистика")
         dialog.setGeometry(100, 100, 300, 250)
         dialog.setFixedSize(275, 250)
+        dialog.setStyleSheet("color: white")
         dialog.setStyleSheet("background-color: #26252d;")
 
         label = QLabel("Всего использовано мб трафика:", dialog)  # Создаем лейбл с текстом
@@ -308,6 +315,7 @@ class MainWindow(QWidget):
 
         cancel_btn = QPushButton("Выход", dialog)  # Кнопка выхода
         cancel_btn.setGeometry(100, 200, 100, 25)
+        cancel_btn.setStyleSheet("color: white")
         cancel_btn.clicked.connect(dialog.reject)
 
         dialog.exec()
@@ -338,4 +346,3 @@ if __name__ == "__main__":
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
-
