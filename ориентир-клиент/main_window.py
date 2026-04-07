@@ -1,7 +1,7 @@
 import sys
 import os
 import json
-from PySide6.QtWidgets import QApplication, QWidget, QPushButton, QDialog, QLabel, QLineEdit, QMenu
+from PySide6.QtWidgets import QApplication, QWidget, QPushButton, QDialog, QLabel, QLineEdit, QMenu, QVBoxLayout
 from PySide6.QtGui import QFont, QPainter, QColor, QAction, QPen, Qt
 from PySide6.QtCore import QPropertyAnimation, QEasingCurve, QRectF, Property, Signal, QPoint
 
@@ -77,6 +77,8 @@ class MainWindow(QWidget):
         self.ping = 30
         self.speed = 30
         self.speed1 = 30
+
+        self.overlay = OverlayDialog(self)
 
         self.settings_file = "settings.json"
         self.server = ""
@@ -178,7 +180,8 @@ class MainWindow(QWidget):
 
         self.save_settings()
 
-        self.dialog.accept()
+        self.overlay.hide_overlay()
+
 
     # Кнопка включения/подключения
     def on_button_on(self, is_checked):
@@ -206,79 +209,74 @@ class MainWindow(QWidget):
             self.speed_label.setStyleSheet("color: white")
             self.speed_label.setVisible(False)
 
-    # Настройки
-    def on_button_settings(self):
-        print("Кнопка 'Настройка' нажата")
-        self.open_new_window()
-
-    # Открытие нового окна
-    def open_new_window(self):
-        self.dialog = QDialog(self)
-        self.dialog.setWindowTitle("Настройки")
-        self.dialog.setGeometry(200, 200, 300, 300)
-        self.dialog.setFixedSize(240, 215)
-        self.dialog.setStyleSheet("background-color: #26252d; color: white")
+    def show_settings_overlay(self):
+        content = QWidget()
 
         # Метка "Сервер"
-        label = QLabel("Сервер:", self.dialog)
-        label.setGeometry(10, 10, 100, 20)
-        label.setStyleSheet("color: white; font-size: 12px;")
+        self.label = QLabel("Сервер:", content)
+        self.label.setStyleSheet("color: white; font-size: 12px;")
 
         # Поле для ввода сервера
-        self.server_edit = QLineEdit(self.dialog)
-        self.server_edit.setGeometry(10, 30, 220, 25)
+        self.server_edit = QLineEdit(content)
         self.server_edit.setFixedSize(220, 25)
         self.server_edit.setText(self.server)
         self.server_edit.setPlaceholderText("Введите адрес сервера")
         self.server_edit.setStyleSheet("background-color: white; color: black;")
 
         # Метка "Порт"
-        label2 = QLabel("Порт:", self.dialog)
-        label2.setGeometry(10, 60, 100, 20)
-        label2.setStyleSheet("color: white; font-size: 12px;")
+        self.label2 = QLabel("Порт:", content)
+        self.label2.setStyleSheet("color: white; font-size: 12px;")
 
         # Метка "По умолчанию"
-        label4 = QLabel("По умолчанию 443", self.dialog)
-        label4.setGeometry(100, 60, 110, 20)
-        label4.setStyleSheet("color: white; font-size: 12px;")
+        self.label4 = QLabel("По умолчанию 443", content)
+        self.label4.setStyleSheet("color: white; font-size: 12px;")
 
         # Поле для ввода порта
-        self.port_edit = QLineEdit(self.dialog)
-        self.port_edit.setGeometry(10, 80, 220, 25)
+        self.port_edit = QLineEdit(content)
         self.port_edit.setFixedSize(220, 25)
         self.port_edit.setText(str(self.port))
         self.port_edit.setPlaceholderText("По умолчанию 443")
         self.port_edit.setStyleSheet("background-color: white; color: black;")
 
         # Метка "Пароль"
-        label3 = QLabel("Пароль:", self.dialog)
-        label3.setGeometry(10, 110, 100, 20)
-        label3.setStyleSheet("color: white; font-size: 12px;")
+        self.label3 = QLabel("Пароль:", content)
+        self.label3.setStyleSheet("color: white; font-size: 12px;")
 
         # Поле для ввода пароля
-        self.password_edit = QLineEdit(self.dialog)
-        self.password_edit.setGeometry(10, 130, 220, 25)
+        self.password_edit = QLineEdit(content)
         self.password_edit.setFixedSize(220, 25)
         self.password_edit.setText(self.password)
         self.password_edit.setPlaceholderText("Введите пароль")
         self.password_edit.setStyleSheet("background-color: white; color: black;")
         self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
 
-        self.save_button = QPushButton(self.dialog)
+        self.save_button = QPushButton(content)
         self.save_button.setText("Сохранить")
-        self.save_button.setGeometry(10, 170, 105, 40)
-        self.save_button.setFixedSize(105, 40)
         self.save_button.setStyleSheet("color: white")
         self.save_button.clicked.connect(self.save_dialog_settings)
 
-        self.cancel_button = QPushButton(self.dialog)
+        self.cancel_button = QPushButton(content)
         self.cancel_button.setText("Отмена")
-        self.cancel_button.setGeometry(125, 170, 105, 40)
-        self.cancel_button.setFixedSize(105, 40)
         self.cancel_button.setStyleSheet("color: white")
-        self.cancel_button.clicked.connect(self.dialog.close)
+        self.cancel_button.clicked.connect(self.overlay.hide_overlay)
 
-        self.dialog.exec()
+        layout = QVBoxLayout(content)
+        layout.addWidget(self.label)
+        layout.addWidget(self.server_edit)
+        layout.addWidget(self.label2)
+        layout.addWidget(self.port_edit)
+        layout.addWidget(self.label3)
+        layout.addWidget(self.password_edit)
+        layout.addWidget(self.label4)
+        layout.addWidget(self.save_button)
+        layout.addWidget(self.cancel_button)
+
+        self.overlay.show_with_content(content)
+
+    # Настройки
+    def on_button_settings(self):
+        print("Кнопка 'Настройка' нажата")
+        self.show_settings_overlay()
 
     def open_new_window_stat(self):
         dialog = QDialog(self)  # Создаем окно
@@ -291,13 +289,15 @@ class MainWindow(QWidget):
         label = QLabel("Всего использовано мб трафика:", dialog)  # Создаем лейбл с текстом
         label.setGeometry(10, 10, 200, 10)
         label.setStyleSheet("color: white; font-size: 12px;")
-        trafic = QLabel(f"{self.traficZnachenie} {self.Format}", dialog)  # Создаем лейбл со значением трафика
+        trafic = QLabel(f"{self.traficZnachenie} {self.Format}", dialog)
+        trafic.setStyleSheet("color: white")# Создаем лейбл со значением трафика
         trafic.setGeometry(210, 10, 200, 10)
 
         label2 = QLabel("Средняя скорость:", dialog)  # Создаем лейбл с текстом
         label2.setGeometry(10, 60, 200, 20)
         label2.setStyleSheet("color: white; font-size: 12px;")
-        sped = QLabel(f"{self.spedZnachenie} {self.FormatSped}", dialog)  # Создаем лейбл со значением скорости
+        sped = QLabel(f"{self.spedZnachenie} {self.FormatSped}", dialog)
+        sped.setStyleSheet("color: white")# Создаем лейбл со значением скорости
         sped.setGeometry(120, 65, 200, 10)
 
         label3 = QLabel("Количество подключений за 24ч:", dialog)  # Создаем лейбл с текстом
@@ -305,12 +305,14 @@ class MainWindow(QWidget):
         label3.setStyleSheet("color: white; font-size: 12px;")
         podkl = QLabel(f"{self.podklZnach} раз", dialog)  # Создаем лейбл со значением кол-во подключений
         podkl.setGeometry(210, 115, 200, 10)
+        podkl.setStyleSheet("color: white")
         podkl.setFixedSize(50, 20)
 
         label4 = QLabel("Всего времени проведено: ", dialog)  # Создаем лейбл с текстом
         label4.setGeometry(10, 160, 200, 40)
         label4.setStyleSheet("color: white; font-size: 12px;")
         vremes = QLabel(f"{self.VremesZnachenie} минут", dialog)  # Создаем лейбл со значением кол-во подключений
+        vremes.setStyleSheet("color: white")
         vremes.setGeometry(180, 175, 200, 10)
 
         cancel_btn = QPushButton("Выход", dialog)  # Кнопка выхода
@@ -324,7 +326,7 @@ class MainWindow(QWidget):
         menu = QMenu(self)
 
         act1 = QAction("⚙️Настройки", self)
-        act1.triggered.connect(self.open_new_window)
+        act1.triggered.connect(self.show_settings_overlay)
         menu.addAction(act1)
 
         act2 = QAction("📊Статистика", self)
@@ -340,6 +342,57 @@ class MainWindow(QWidget):
 
         position = self.button4.mapToGlobal(QPoint(0,self.button4.height()))
         menu.exec(position)
+
+
+
+
+class OverlayDialog(QWidget):
+    def __init__(self, parent_main_window):
+        super().__init__(parent_main_window)
+
+        self.main_window = parent_main_window
+
+        self.setVisible(False)
+        self.setStyleSheet("""background-color: #26252d;""")
+
+        self.container = QWidget(self)
+        self.container.setStyleSheet("""
+        color: white;
+        background-color: #26252d;
+        border-radius: 10px;
+        padding: 20px;
+        """)
+        self.container.setFixedWidth(280)
+
+        self.layout = QVBoxLayout(self)
+        self.layout.addStretch()
+        self.layout.addWidget(self.container)
+        self.layout.addStretch()
+        self.layout.setAlignment(self.container, Qt.AlignCenter)
+
+    def show_with_content(self, content_widget):
+        for widget in self.container.findChildren(QWidget):
+            widget.deleteLater()
+
+        if not self.container.layout():
+            self.container.setLayout(QVBoxLayout())
+
+        self.container.layout().addWidget(content_widget)
+        self.setGeometry(self.main_window.rect())
+        self.main_window.setEnabled(False)
+        self.setVisible(True)
+
+    def hide_overlay(self):
+        self.setVisible(False)
+        self.main_window.setEnabled(True)
+
+    def resizeEvent(self, event):
+        self.setGeometry(self.main_window.rect())
+        super().resizeEvent(event)
+
+
+
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
