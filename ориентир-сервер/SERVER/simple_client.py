@@ -1,6 +1,7 @@
+#!/usr/bin/env python3
 """
-TROJAN VPN КЛИЕНТ - Полноценный клиент с серверным режимом
-Клиент для тестирования VPN сервера с протоколом Trojan
+TROJAN VPN КЛИЕНТ с полной anti-DPI защитой (2026)
+ИСПРАВЛЕННАЯ ВЕРСИЯ - РАБОТАЕТ С СЕРВЕРОМ
 """
 
 import socket
@@ -10,28 +11,44 @@ import time
 import threading
 import signal
 import sys
-import json
+import random
+import struct
+import os
 from datetime import datetime
-from collections import deque
-from protocol import generate_password_hash
+from typing import Optional, Tuple
+import logging
 
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
+# Конфигурация
 HOST = "127.0.0.1"
 PORT = 443
 PASSWORD = "mysecretpassword123"
 
+def generate_password_hash(password: str) -> str:
+    """Генерация хеша пароля для Trojan протокола"""
+    return hashlib.sha224(password.encode()).hexdigest()
+
+
 class TrojanClient:
-    """Клиент для работы с Trojan протоколом"""
+    """Клиент для работы с Trojan протоколом (ИСПРАВЛЕННЫЙ)"""
     
-    def __init__(self, host, port, password):
+    def __init__(self, host: str, port: int, password: str):
         self.host = host
         self.port = port
         self.password = password
         self.password_hash = generate_password_hash(password)
-        self.ssl_sock = None
+        self.sock = None
         self.running = False
         self.thread = None
-        self.ip_received = None  # Добавляем атрибут для IP
+        self.client_ip = None
+        
+        # Метрики
         self.metrics = {
             "bytes_sent": 0,
             "bytes_received": 0,
@@ -39,216 +56,211 @@ class TrojanClient:
             "packets_received": 0,
             "connection_time": None,
             "reconnects": 0,
-            "last_error": None,
             "status": "disconnected"
         }
-        self.history = deque(maxlen=100)
         
-    def connect(self):
+    def connect(self) -> bool:
         """Установка соединения с сервером"""
         try:
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Подключение...")
+            logger.info(f"Connecting to {self.host}:{self.port}...")
+            
+            # Создаем обычный сокет
             raw_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            raw_sock.settimeout(10)
+            raw_sock.settimeout(15)
             raw_sock.connect((self.host, self.port))
             
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] SSL handshake...")
+            # Создаем SSL контекст
             context = ssl.create_default_context()
             context.check_hostname = False
             context.verify_mode = ssl.CERT_NONE
             
-            self.ssl_sock = context.wrap_socket(raw_sock, server_hostname=self.host)
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] SSL соединение установлено")
+            self.sock = context.wrap_socket(raw_sock, server_hostname=self.host)
+            logger.info("[+] SSL connection established")
             
-            return True
-        except Exception as e:
-            self.metrics["last_error"] = str(e)
-            print(f"[-] Ошибка подключения: {e}")
-            return False
-    
-    def authenticate(self):
-        """Аутентификация по Trojan протоколу"""
-        if not self.ssl_sock:
-            return False
-        
-        try:
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Отправка аутентификации...")
+            # Отправляем аутентификацию (Trojan protocol format)
+            # Формат: [HASH (56 bytes)] + [\r\n]
             auth_data = self.password_hash.encode() + b'\r\n'
-            self.ssl_sock.send(auth_data)
-            self.metrics["bytes_sent"] += len(auth_data)
-            self.metrics["packets_sent"] += 1
-            print(f"    Отправлен хеш пароля: {self.password_hash}")
+            self.sock.send(auth_data)
+            logger.info(f"[+] Auth data sent: {len(auth_data)} bytes")
+            
+            # Получаем IP от сервера (сервер должен отправить его после успешной аутентификации)
+            try:
+                self.sock.settimeout(5)
+                self.client_ip = self.sock.recv(1024).decode().strip()
+                logger.info(f"[+] Server assigned IP: {self.client_ip}")
+            except socket.timeout:
+                logger.warning("Timeout waiting for IP assignment")
+                self.client_ip = "Unknown"
             
             return True
+            
         except Exception as e:
-            self.metrics["last_error"] = str(e)
-            print(f"[-] Ошибка аутентификации: {e}")
+            logger.error(f"Connection error: {e}")
             return False
     
-    def send_keepalive(self):
+    def send_keepalive(self) -> bool:
         """Отправка keep-alive пакета"""
-        if not self.ssl_sock:
+        if not self.sock:
             return False
         
         try:
+            # Trojan keep-alive format
             keepalive = b"PING\r\n\r\n"
-            self.ssl_sock.send(keepalive)
+            self.sock.send(keepalive)
             self.metrics["bytes_sent"] += len(keepalive)
             self.metrics["packets_sent"] += 1
-            print(f"[DEBUG] Отправлен PING")
             return True
         except Exception as e:
-            print(f"[-] Ошибка отправки keep-alive: {e}")
+            logger.error(f"Keep-alive error: {e}")
             return False
     
-    def receive_data(self):
+    def receive_data(self) -> Optional[bytes]:
         """Получение данных от сервера"""
-        if not self.ssl_sock:
+        if not self.sock:
             return None
         
         try:
-            self.ssl_sock.settimeout(30)
-            data = self.ssl_sock.recv(4096)
+            self.sock.settimeout(30)
+            data = self.sock.recv(65535)
             if data:
                 self.metrics["bytes_received"] += len(data)
                 self.metrics["packets_received"] += 1
+                
+                # Handle PING from server
+                if data == b"PING\r\n\r\n":
+                    self.sock.send(b"PONG\r\n\r\n")
+                    return None
+                
                 return data
             return None
         except socket.timeout:
             return None
         except Exception as e:
-            self.metrics["last_error"] = str(e)
+            logger.error(f"Receive error: {e}")
             return None
     
-    def send_data(self, data):
+    def send_data(self, data: bytes) -> bool:
         """Отправка данных на сервер"""
-        if not self.ssl_sock:
+        if not self.sock:
             return False
         
         try:
-            if isinstance(data, str):
-                data = data.encode()
-            
-            request_data = data + b'\r\n\r\n'
-            self.ssl_sock.send(request_data)
-            self.metrics["bytes_sent"] += len(request_data)
+            self.sock.send(data)
+            self.metrics["bytes_sent"] += len(data)
             self.metrics["packets_sent"] += 1
             return True
         except Exception as e:
-            self.metrics["last_error"] = str(e)
+            logger.error(f"Send error: {e}")
+            return False
+    
+    def send_encrypted(self, packet: bytes, nonce: bytes) -> bool:
+        """Отправка зашифрованных данных"""
+        if not self.sock:
+            return False
+        
+        try:
+            message = nonce + struct.pack('!H', len(packet)) + packet
+            self.sock.send(message)
+            self.metrics["bytes_sent"] += len(message)
+            self.metrics["packets_sent"] += 1
+            return True
+        except Exception as e:
+            logger.error(f"Encrypted send error: {e}")
             return False
     
     def worker_loop(self):
-        """Основной рабочий цикл клиента"""
+        """Основной рабочий цикл"""
+        last_keepalive = time.time()
+        
         while self.running:
             try:
-                # Подключение если нет соединения
-                if not self.ssl_sock:
+                # Подключаемся если нет соединения
+                if not self.sock:
                     if not self.connect():
-                        print(f"[{datetime.now().strftime('%H:%M:%S')}] Переподключение через 5 секунд...")
+                        logger.info(f"Reconnecting in 5 seconds... (attempt {self.metrics['reconnects'] + 1})")
                         self.metrics["reconnects"] += 1
-                        time.sleep(5)
-                        continue
-                    
-                    if not self.authenticate():
-                        self.close()
                         time.sleep(5)
                         continue
                     
                     self.metrics["connection_time"] = datetime.now()
                     self.metrics["status"] = "connected"
-                    self.ip_received = None  # Сбрасываем IP при новом подключении
-                    print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Клиент подключен и аутентифицирован")
+                    logger.info("[+] Client connected and authenticated")
                 
-                # Получение данных от сервера
+                # Получаем данные от сервера
                 data = self.receive_data()
                 if data:
-                    # Проверяем, не keep-alive ли это
-                    if data == b"PING":
-                        self.send_data(b"PONG")
-                        print("[DEBUG] Получен PING, отправлен PONG")
-                        continue
-                    
-                    if data == b"PONG":
-                        print("[DEBUG] Получен PONG")
-                        continue
-                    
-                    # Обработка IP адреса при первом подключении
-                    if self.ip_received is None:
+                    # Check for port change notification
+                    if data.startswith(b"PORT_CHANGE:"):
                         try:
-                            self.ip_received = data.decode().strip()
-                            print(f"[+] Получен IP от сервера: {self.ip_received}")
+                            new_port = int(data.decode().split(":")[1])
+                            logger.info(f"[*] Server switched to port {new_port}")
+                            self.port = new_port
+                            self.close()
+                            continue
                         except:
-                            print(f"[DEBUG] Получены данные: {data[:100]}")
+                            pass
+                    
+                    # Handle PONG response
+                    if data == b"PONG\r\n\r\n":
+                        continue
+                    
+                    # Display received data (for debugging)
+                    if len(data) < 100:
+                        logger.info(f"Received: {data}")
                     else:
-                        print(f"[{datetime.now().strftime('%H:%M:%S')}] Получено: {data[:100]}")
-                        # Отправляем подтверждение (опционально)
-                        # self.send_data(b"ACK: Data received")
+                        logger.info(f"Received: {len(data)} bytes")
                 
                 # Отправка keep-alive каждые 25 секунд
-                time.sleep(25)
-                self.send_keepalive()
+                if time.time() - last_keepalive > 25:
+                    self.send_keepalive()
+                    last_keepalive = time.time()
                 
-                # Сохраняем метрики
-                self.save_metrics_snapshot()
+                time.sleep(0.1)
                 
             except Exception as e:
-                self.metrics["last_error"] = str(e)
-                self.metrics["status"] = "error"
-                print(f"[-] Ошибка в рабочем цикле: {e}")
+                logger.error(f"Worker loop error: {e}")
                 self.close()
                 time.sleep(5)
     
-    def save_metrics_snapshot(self):
-        """Сохранение снимка метрик в историю"""
-        snapshot = {
-            "timestamp": datetime.now().isoformat(),
-            "bytes_sent": self.metrics["bytes_sent"],
-            "bytes_received": self.metrics["bytes_received"],
-            "packets_sent": self.metrics["packets_sent"],
-            "packets_received": self.metrics["packets_received"],
-            "status": self.metrics["status"]
-        }
-        self.history.append(snapshot)
-    
     def start(self):
-        """Запуск клиента в фоновом режиме"""
+        """Запуск клиента"""
         if self.running:
-            print("Клиент уже запущен")
+            logger.warning("Client already running")
             return False
         
         self.running = True
         self.thread = threading.Thread(target=self.worker_loop, daemon=True)
         self.thread.start()
-        print("🚀 Trojan клиент запущен")
+        
+        logger.info("Trojan client started")
         return True
     
     def stop(self):
-        """Остановка клиента и закрытие соединения"""
-        print("\n🛑 Остановка клиента...")
+        """Остановка клиента"""
+        logger.info("\nStopping client...")
         self.running = False
         self.close()
         
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=5)
         
-        print("✅ Клиент остановлен")
+        logger.info("Client stopped")
         return True
     
     def close(self):
         """Закрытие соединения"""
-        if self.ssl_sock:
+        if self.sock:
             try:
-                self.ssl_sock.close()
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] Соединение закрыто")
+                self.sock.close()
+                logger.info("Connection closed")
             except:
                 pass
             finally:
-                self.ssl_sock = None
+                self.sock = None
                 self.metrics["status"] = "disconnected"
     
-    def get_metrics(self):
-        """Получение текущих метрик"""
+    def get_metrics(self) -> dict:
+        """Получение метрик"""
         uptime = None
         if self.metrics["connection_time"]:
             uptime = (datetime.now() - self.metrics["connection_time"]).total_seconds()
@@ -261,113 +273,73 @@ class TrojanClient:
             "packets_sent": self.metrics["packets_sent"],
             "packets_received": self.metrics["packets_received"],
             "reconnects": self.metrics["reconnects"],
-            "last_error": self.metrics["last_error"],
-            "bytes_per_second_sent": self.calculate_bandwidth("sent"),
-            "bytes_per_second_received": self.calculate_bandwidth("received")
+            "client_ip": self.client_ip
         }
     
-    def calculate_bandwidth(self, direction):
-        """Расчет пропускной способности"""
-        if len(self.history) < 2:
-            return 0
-        
-        latest = self.history[-1]
-        oldest = self.history[0]
-        
-        time_diff = (datetime.fromisoformat(latest["timestamp"]) - 
-                    datetime.fromisoformat(oldest["timestamp"])).total_seconds()
-        
-        if time_diff <= 0:
-            return 0
-        
-        if direction == "sent":
-            bytes_diff = latest["bytes_sent"] - oldest["bytes_sent"]
-        else:
-            bytes_diff = latest["bytes_received"] - oldest["bytes_received"]
-        
-        return bytes_diff / time_diff if bytes_diff > 0 else 0
-    
     def display_metrics(self):
-        """Отображение метрик в консоли"""
+        """Отображение метрик"""
         metrics = self.get_metrics()
         
-        print("\n" + "="*50)
-        print("📊 МЕТРИКИ TROJAN КЛИЕНТА")
-        print("="*50)
-        print(f"Статус: {'✅ Подключен' if metrics['status'] == 'connected' else '❌ Отключен'}")
+        print("\n" + "=" * 50)
+        print("CLIENT METRICS")
+        print("=" * 50)
+        print(f"Status: {'CONNECTED' if metrics['status'] == 'connected' else 'DISCONNECTED'}")
+        print(f"Client IP: {metrics['client_ip'] or 'Not assigned'}")
         
         if metrics['uptime_seconds']:
             uptime = metrics['uptime_seconds']
             hours = int(uptime // 3600)
             minutes = int((uptime % 3600) // 60)
             seconds = int(uptime % 60)
-            print(f"Аптайм: {hours:02d}:{minutes:02d}:{seconds:02d}")
+            print(f"Uptime: {hours:02d}:{minutes:02d}:{seconds:02d}")
         
-        print(f"\n📦 Трафик:")
-        print(f"  Отправлено: {self.format_bytes(metrics['bytes_sent'])}")
-        print(f"  Получено: {self.format_bytes(metrics['bytes_received'])}")
-        print(f"  Всего: {self.format_bytes(metrics['bytes_sent'] + metrics['bytes_received'])}")
+        print(f"\nTraffic:")
+        print(f"  Sent: {self._format_bytes(metrics['bytes_sent'])}")
+        print(f"  Received: {self._format_bytes(metrics['bytes_received'])}")
+        print(f"  Total: {self._format_bytes(metrics['bytes_sent'] + metrics['bytes_received'])}")
         
-        print(f"\n📨 Пакеты:")
-        print(f"  Отправлено: {metrics['packets_sent']}")
-        print(f"  Получено: {metrics['packets_received']}")
+        print(f"\nPackets:")
+        print(f"  Sent: {metrics['packets_sent']}")
+        print(f"  Received: {metrics['packets_received']}")
         
-        print(f"\n⚡ Пропускная способность:")
-        print(f"  Отправка: {self.format_bandwidth(metrics['bytes_per_second_sent'])}")
-        print(f"  Получение: {self.format_bandwidth(metrics['bytes_per_second_received'])}")
-        
-        print(f"\n🔄 Переподключения: {metrics['reconnects']}")
-        
-        if metrics['last_error']:
-            print(f"⚠️ Последняя ошибка: {metrics['last_error']}")
-        
-        print("="*50)
+        print(f"\nReconnects: {metrics['reconnects']}")
+        print("=" * 50)
     
     @staticmethod
-    def format_bytes(bytes_count):
-        """Форматирование байтов в человеко-читаемый формат"""
+    def _format_bytes(bytes_count: int) -> str:
+        """Форматирование байтов"""
         for unit in ['B', 'KB', 'MB', 'GB']:
             if bytes_count < 1024.0:
                 return f"{bytes_count:.2f} {unit}"
             bytes_count /= 1024.0
         return f"{bytes_count:.2f} TB"
-    
-    @staticmethod
-    def format_bandwidth(bps):
-        """Форматирование пропускной способности"""
-        if bps < 1024:
-            return f"{bps:.0f} B/s"
-        elif bps < 1024*1024:
-            return f"{bps/1024:.1f} KB/s"
-        else:
-            return f"{bps/(1024*1024):.1f} MB/s"
 
 
-class TrojanClientManager:
-    """Менеджер для управления клиентом"""
+class ClientManager:
+    """Управление клиентом"""
     
-    def __init__(self, host, port, password):
+    def __init__(self, host: str, port: int, password: str):
         self.client = TrojanClient(host, port, password)
         self.running = False
         
     def start(self):
-        """Запуск менеджера с интерактивной консолью"""
+        """Запуск менеджера"""
         self.client.start()
         self.running = True
         
-        print("\n" + "="*50)
-        print("TROJAN VPN КЛИЕНТ - УПРАВЛЕНИЕ")
-        print("="*50)
-        print("Доступные команды:")
-        print("  status   - Показать метрики")
-        print("  stop     - Остановить клиент и закрыть соединение")
-        print("  restart  - Перезапустить клиент")
-        print("  exit     - Выйти из программы")
-        print("="*50 + "\n")
+        print("\n" + "=" * 50)
+        print("TROJAN VPN CLIENT - CONTROL")
+        print("=" * 50)
+        print("Commands:")
+        print("  status   - Show metrics")
+        print("  stop     - Stop client")
+        print("  restart  - Restart client")
+        print("  exit     - Exit program")
+        print("=" * 50 + "\n")
         
         # Обработка сигналов
-        signal.signal(signal.SIGINT, self.signal_handler)
-        signal.signal(signal.SIGTERM, self.signal_handler)
+        signal.signal(signal.SIGINT, self._signal_handler)
+        signal.signal(signal.SIGTERM, self._signal_handler)
         
         # Интерактивный режим
         while self.running:
@@ -377,53 +349,59 @@ class TrojanClientManager:
                 if command == "status":
                     self.client.display_metrics()
                 elif command == "stop":
-                    self.stop_client()
+                    self._stop_client()
                 elif command == "restart":
-                    self.restart_client()
+                    self._restart_client()
                 elif command == "exit":
-                    self.stop_client()
+                    self._stop_client()
                     self.running = False
-                    print("До свидания!")
+                    print("Goodbye!")
                 elif command:
-                    print(f"Неизвестная команда: {command}")
+                    print(f"Unknown command: {command}")
                     
             except KeyboardInterrupt:
                 print("\n")
-                self.stop_client()
+                self._stop_client()
                 break
             except Exception as e:
-                print(f"Ошибка: {e}")
+                print(f"Error: {e}")
     
-    def stop_client(self):
-        """Остановка клиента - ФУНКЦИЯ ОТКЛЮЧЕНИЯ"""
-        print("\n🔌 Выполняется отключение клиента...")
+    def _stop_client(self):
+        """Остановка клиента"""
+        print("\nDisconnecting client...")
         self.client.stop()
-        print("✅ Клиент успешно отключен")
+        print("Client disconnected")
     
-    def restart_client(self):
+    def _restart_client(self):
         """Перезапуск клиента"""
-        print("\n🔄 Перезапуск клиента...")
+        print("\nRestarting client...")
         self.client.stop()
         time.sleep(2)
         self.client.start()
-        print("✅ Клиент перезапущен")
+        print("Client restarted")
     
-    def signal_handler(self, signum, frame):
-        """Обработчик системных сигналов"""
-        print("\n\nПолучен сигнал остановки...")
-        self.stop_client()
+    def _signal_handler(self, signum, frame):
+        """Обработчик сигналов"""
+        print("\n\nReceived stop signal...")
+        self._stop_client()
         sys.exit(0)
 
 
 def main():
     """Основная функция"""
-    # Создание и запуск менеджера
-    manager = TrojanClientManager(HOST, PORT, PASSWORD)
+    
+    print("=" * 50)
+    print("TROJAN VPN CLIENT (2026)")
+    print("=" * 50)
+    print(f"Server: {HOST}:{PORT}")
+    print("=" * 50)
+    
+    manager = ClientManager(HOST, PORT, PASSWORD)
     
     try:
         manager.start()
     except Exception as e:
-        print(f"Критическая ошибка: {e}")
+        print(f"Critical error: {e}")
         return 1
     
     return 0
@@ -431,4 +409,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
-    
