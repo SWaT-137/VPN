@@ -75,7 +75,7 @@ class TrojanProtocol:
 class FakeWebServer:
     """Класс для имитации веб-сервера"""
     
-    def __init__(self,sock):
+    def __init__(self):
         self.responses = [
             # Успешные ответы
             b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n<html><body><h1>Welcome to Corporate Portal</h1></body></html>",
@@ -94,7 +94,7 @@ class FakeWebServer:
             # Загрузка файлов
             b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=\"report.pdf\"\r\nConnection: close\r\n\r\n" + b"X" * 1000
         ]
-        sock.send(self.responses)
+    
     def serve_fake_response(self, sock):
         """Отправка случайного фейкового HTTP ответа"""
         try:
