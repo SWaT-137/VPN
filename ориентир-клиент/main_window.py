@@ -1,7 +1,7 @@
 import sys
 import os
 import json
-from PySide6.QtWidgets import QApplication, QWidget, QPushButton, QDialog, QLabel, QLineEdit, QMenu, QVBoxLayout
+from PySide6.QtWidgets import QApplication, QWidget, QPushButton, QLabel, QLineEdit, QMenu, QVBoxLayout
 from PySide6.QtGui import QFont, QPainter, QColor, QAction, QPen, Qt
 from PySide6.QtCore import QPropertyAnimation, QEasingCurve, QRectF, Property, Signal, QPoint
 
@@ -78,8 +78,6 @@ class MainWindow(QWidget):
         self.speed = 30
         self.speed1 = 30
 
-        self.overlay = OverlayDialog(self)
-
         self.settings_file = "settings.json"
         self.server = ""
         self.port = 443
@@ -135,6 +133,7 @@ class MainWindow(QWidget):
         self.speed_label.setVisible(False)
 
         self.load_settings()
+        self.overlay = OverlayDialog(self)
 
 
     def load_settings(self):
@@ -182,7 +181,6 @@ class MainWindow(QWidget):
 
         self.overlay.hide_overlay()
 
-
     # Кнопка включения/подключения
     def on_button_on(self, is_checked):
         if is_checked:
@@ -227,10 +225,6 @@ class MainWindow(QWidget):
         self.label2 = QLabel("Порт:", content)
         self.label2.setStyleSheet("color: white; font-size: 12px;")
 
-        # Метка "По умолчанию"
-        self.label4 = QLabel("По умолчанию 443", content)
-        self.label4.setStyleSheet("color: white; font-size: 12px;")
-
         # Поле для ввода порта
         self.port_edit = QLineEdit(content)
         self.port_edit.setFixedSize(220, 25)
@@ -267,7 +261,6 @@ class MainWindow(QWidget):
         layout.addWidget(self.port_edit)
         layout.addWidget(self.label3)
         layout.addWidget(self.password_edit)
-        layout.addWidget(self.label4)
         layout.addWidget(self.save_button)
         layout.addWidget(self.cancel_button)
 
@@ -275,52 +268,27 @@ class MainWindow(QWidget):
 
     # Настройки
     def on_button_settings(self):
-        print("Кнопка 'Настройка' нажата")
         self.show_settings_overlay()
 
-    def open_new_window_stat(self):
-        dialog = QDialog(self)  # Создаем окно
-        dialog.setWindowTitle("Статистика")
-        dialog.setGeometry(100, 100, 300, 250)
-        dialog.setFixedSize(275, 250)
-        dialog.setStyleSheet("color: white")
-        dialog.setStyleSheet("background-color: #26252d;")
+    def show_stats_overlay(self):
+        content = QWidget()
 
-        label = QLabel("Всего использовано мб трафика:", dialog)  # Создаем лейбл с текстом
-        label.setGeometry(10, 10, 200, 10)
-        label.setStyleSheet("color: white; font-size: 12px;")
-        trafic = QLabel(f"{self.traficZnachenie} {self.Format}", dialog)
-        trafic.setStyleSheet("color: white")# Создаем лейбл со значением трафика
-        trafic.setGeometry(210, 10, 200, 10)
+        trafic_label = QLabel(f"Всего использовано: {self.traficZnachenie} {self.Format}", content)
+        speed_label = QLabel(f"Средняя скорость: {self.spedZnachenie} {self.FormatSped}", content)
+        connection_label = QLabel(f"Количество подключений за 24 часа: {self.podklZnach} раз", content)
+        time_label = QLabel(f"Всего времени проведено: {self.VremesZnachenie} минут", content)
 
-        label2 = QLabel("Средняя скорость:", dialog)  # Создаем лейбл с текстом
-        label2.setGeometry(10, 60, 200, 20)
-        label2.setStyleSheet("color: white; font-size: 12px;")
-        sped = QLabel(f"{self.spedZnachenie} {self.FormatSped}", dialog)
-        sped.setStyleSheet("color: white")# Создаем лейбл со значением скорости
-        sped.setGeometry(120, 65, 200, 10)
+        exit_button = QPushButton("Выход",content)
+        exit_button.clicked.connect(self.overlay.hide_overlay)
 
-        label3 = QLabel("Количество подключений за 24ч:", dialog)  # Создаем лейбл с текстом
-        label3.setGeometry(10, 110, 200, 30)
-        label3.setStyleSheet("color: white; font-size: 12px;")
-        podkl = QLabel(f"{self.podklZnach} раз", dialog)  # Создаем лейбл со значением кол-во подключений
-        podkl.setGeometry(210, 115, 200, 10)
-        podkl.setStyleSheet("color: white")
-        podkl.setFixedSize(50, 20)
+        layout = QVBoxLayout(content)
+        layout.addWidget(trafic_label)
+        layout.addWidget(speed_label)
+        layout.addWidget(connection_label)
+        layout.addWidget(time_label)
+        layout.addWidget(exit_button)
 
-        label4 = QLabel("Всего времени проведено: ", dialog)  # Создаем лейбл с текстом
-        label4.setGeometry(10, 160, 200, 40)
-        label4.setStyleSheet("color: white; font-size: 12px;")
-        vremes = QLabel(f"{self.VremesZnachenie} минут", dialog)  # Создаем лейбл со значением кол-во подключений
-        vremes.setStyleSheet("color: white")
-        vremes.setGeometry(180, 175, 200, 10)
-
-        cancel_btn = QPushButton("Выход", dialog)  # Кнопка выхода
-        cancel_btn.setGeometry(100, 200, 100, 25)
-        cancel_btn.setStyleSheet("color: white")
-        cancel_btn.clicked.connect(dialog.reject)
-
-        dialog.exec()
+        self.overlay.show_with_content(content)
 
     def show_menu(self):
         menu = QMenu(self)
@@ -330,7 +298,7 @@ class MainWindow(QWidget):
         menu.addAction(act1)
 
         act2 = QAction("📊Статистика", self)
-        act2.triggered.connect(self.open_new_window_stat)
+        act2.triggered.connect(self.show_stats_overlay)
         menu.addAction(act2)
 
         menu.setStyleSheet("""
@@ -344,8 +312,6 @@ class MainWindow(QWidget):
         menu.exec(position)
 
 
-
-
 class OverlayDialog(QWidget):
     def __init__(self, parent_main_window):
         super().__init__(parent_main_window)
@@ -354,6 +320,12 @@ class OverlayDialog(QWidget):
 
         self.setVisible(False)
         self.setStyleSheet("""background-color: #26252d;""")
+
+        self.animation = QPropertyAnimation(self, b"position")
+        self.animation.setDuration(300)
+        self.animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
+
+        self._position = 1.0
 
         self.container = QWidget(self)
         self.container.setStyleSheet("""
@@ -364,35 +336,71 @@ class OverlayDialog(QWidget):
         """)
         self.container.setFixedWidth(280)
 
-        self.layout = QVBoxLayout(self)
-        self.layout.addStretch()
-        self.layout.addWidget(self.container)
-        self.layout.addStretch()
-        self.layout.setAlignment(self.container, Qt.AlignCenter)
+    @property
+    def position(self):
+        return self._position
+
+    @position.setter
+    def position(self, value):
+        self._position = value
+        self.updateContainerPosition()
+
+    def updateContainerPosition(self):
+        if not self.main_window:
+            return
+
+        overlay_width = self.width()
+        overlay_height = self.height()
+        container_width = self.container.width()
+        container_height = self.container.height()
+
+        center_x = (overlay_width - container_width) // 2
+        y = (overlay_height - container_height) // 2
+
+        hidden_x = overlay_width
+
+        x = center_x + (hidden_x - center_x) * self._position
+
+        self.container.move(x, y)
+
 
     def show_with_content(self, content_widget):
+        self.animation.stop()
+
+        self.setVisible(False)
+
         for widget in self.container.findChildren(QWidget):
             widget.deleteLater()
 
         if not self.container.layout():
             self.container.setLayout(QVBoxLayout())
-
         self.container.layout().addWidget(content_widget)
-        self.setGeometry(self.main_window.rect())
-        self.main_window.setEnabled(False)
+
+        self.container.updateGeometry()
+        self.container.layout().activate()
+
+        self._position = 1.0
+        self.updateContainerPosition()
+
+        self.main_window.button4.setVisible(False)
         self.setVisible(True)
 
+        self.animation.setStartValue(1.0)
+        self.animation.setEndValue(0.0)
+        self.animation.start()
+
     def hide_overlay(self):
+        self.animation.stop()
         self.setVisible(False)
-        self.main_window.setEnabled(True)
+        self.main_window.button4.setVisible(True)
+
+        self._position = 1.0
+        self.updateContainerPosition()
+
 
     def resizeEvent(self, event):
         self.setGeometry(self.main_window.rect())
         super().resizeEvent(event)
-
-
-
-
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
