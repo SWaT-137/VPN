@@ -4,6 +4,7 @@ TROJAN VPN КЛИЕНТ с полной anti-DPI защитой (2026)
 ИСПРАВЛЕННАЯ ВЕРСИЯ - РАБОТАЕТ С СЕРВЕРОМ
 """
 
+
 import socket
 import ssl
 import hashlib
