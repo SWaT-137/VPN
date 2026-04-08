@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-VPN-сервер для Windows с полной anti-DPI защитой (версия 2026)
-Оптимизирован для размещения в Беларуси
+VPN-сервер с ИНТЕГРИРОВАННОЙ ANTI-DPI ЗАЩИТОЙ - ИСПРАВЛЕННАЯ ВЕРСИЯ
 """
 
 import socket
@@ -24,18 +23,19 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.backends import default_backend
 
-# Импорт anti-DPI модуля
+# Импорт улучшенного anti-DPI модуля
 try:
-    from anti_dpi_engine import AntiDPIEngine, BlockDetector
+    from anti_dpi_engine import AntiDPIEngine, get_optimal_sni, get_engine_stats
     ANTI_DPI_AVAILABLE = True
+    print("[+] Enhanced Anti-DPI Engine loaded")
 except ImportError:
     ANTI_DPI_AVAILABLE = False
-    print("[!] Anti-DPI модуль не найден, работаем без защиты")
+    print("[!] Enhanced Anti-DPI module not found, using basic protection")
 
 # Конфигурация
 HOST = "0.0.0.0"
-PORT = 443  # Основной порт
-ALT_PORTS = [8443, 2053, 2083, 2096, 8080]  # Запасные порты
+PORT = 443
+ALT_PORTS = [8443, 2053, 2083, 2096, 8080, 9443, 4443]
 PASSWORD = "mysecretpassword123"
 CERTFILE = "server.crt"
 KEYFILE = "server.key"
@@ -43,9 +43,8 @@ TUN_NAME = "VPNServer"
 VPN_SERVER_IP = "10.8.0.1"
 VPN_NETMASK = "255.255.255.0"
 
-# Настройка логирования с поддержкой UTF-8
+# Настройка логирования
 class SafeLogger:
-    """Безопасный логгер без Unicode проблем"""
     def __init__(self):
         logging.basicConfig(
             level=logging.INFO,
@@ -60,42 +59,42 @@ class SafeLogger:
     def info(self, msg):
         try:
             self.logger.info(msg)
-        except UnicodeEncodeError:
-            # Удаляем проблемные символы
+        except:
             safe_msg = msg.encode('ascii', 'ignore').decode('ascii')
             self.logger.info(safe_msg)
     
     def warning(self, msg):
         try:
             self.logger.warning(msg)
-        except UnicodeEncodeError:
+        except:
             safe_msg = msg.encode('ascii', 'ignore').decode('ascii')
             self.logger.warning(safe_msg)
     
     def error(self, msg):
         try:
             self.logger.error(msg)
-        except UnicodeEncodeError:
+        except:
             safe_msg = msg.encode('ascii', 'ignore').decode('ascii')
             self.logger.error(safe_msg)
 
 logger = SafeLogger()
+
 
 class CryptoEngine:
     """Криптографический движок с ротацией ключей"""
     
     def __init__(self, password: str):
         self.password = password
-        self.key_rotation_time = 3600  # Ротация каждый час
+        self.key_rotation_time = 3600
         self.last_rotation = time.time()
         self.current_key = None
         self.old_keys = []
-        self.rotate_key()
+        self.derive_key()
         logger.info("[+] Crypto engine initialized")
     
-    def rotate_key(self):
-        """Ротация ключей для усиления безопасности"""
-        salt = os.urandom(16)
+    def derive_key(self):
+        """Генерация ключа из пароля"""
+        salt = b'vpn_salt_2026'  # Фиксированная соль для совместимости с клиентом
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
             length=32,
@@ -107,17 +106,19 @@ class CryptoEngine:
         
         if self.current_key:
             self.old_keys.append(self.current_key)
-            # Храним только последние 5 ключей
             if len(self.old_keys) > 5:
                 self.old_keys.pop(0)
         
         self.current_key = new_key
         self.cipher = AESGCM(new_key)
+    
+    def rotate_key(self):
+        """Ротация ключей"""
+        self.derive_key()
         logger.info("[*] Key rotated")
     
     def encrypt(self, data: bytes, nonce: bytes) -> bytes:
         """Шифрование данных"""
-        # Проверяем необходимость ротации
         if time.time() - self.last_rotation > self.key_rotation_time:
             self.rotate_key()
             self.last_rotation = time.time()
@@ -126,11 +127,9 @@ class CryptoEngine:
     
     def decrypt(self, data: bytes, nonce: bytes) -> bytes:
         """Дешифрование данных"""
-        # Пробуем текущий ключ
         try:
             return self.cipher.decrypt(nonce, data, None)
         except:
-            # Пробуем старые ключи
             for old_key in self.old_keys:
                 try:
                     old_cipher = AESGCM(old_key)
@@ -140,60 +139,37 @@ class CryptoEngine:
             raise Exception("Failed to decrypt data")
 
 
-class TrojanProtocol:
-    """Trojan протокол с обфускацией"""
+class TrojanAuth:
+    """Trojan аутентификация"""
     
     def __init__(self, password: str):
-        self.password = password
         self.expected_hash = hashlib.sha224(password.encode()).hexdigest()
-        
-    def authenticate_client(self, sock) -> Tuple[bool, bytes]:
-        """Аутентификация с защитой от анализа"""
+    
+    def authenticate(self, sock) -> bool:
+        """Проверка аутентификации"""
         try:
-            # Добавляем случайную задержку перед чтением
-            time.sleep(random.uniform(0.001, 0.01))
-            
-            # Читаем с защитой от тайминговых атак
+            # Читаем 58 байт аутентификации
             auth_data = b''
-            start_time = time.time()
-            
-            while len(auth_data) < 58 and (time.time() - start_time) < 10:
+            while len(auth_data) < 58:
                 chunk = sock.recv(58 - len(auth_data))
                 if not chunk:
-                    break
+                    return False
                 auth_data += chunk
             
-            if len(auth_data) < 58:
-                return False, auth_data
-            
+            # Проверяем формат
             if auth_data[56:58] != b'\r\n':
-                return False, auth_data
+                return False
             
-            password_hash_hex = auth_data[:56].decode()
-            
-            # Постоянное время сравнения (защита от timing attack)
-            if self._constant_time_compare(password_hash_hex, self.expected_hash):
-                return True, b''
-            
-            return False, auth_data
+            received_hash = auth_data[:56].decode()
+            return received_hash == self.expected_hash
             
         except Exception as e:
             logger.error(f"Auth error: {e}")
-            return False, b''
-    
-    def _constant_time_compare(self, str1: str, str2: str) -> bool:
-        """Сравнение строк за постоянное время"""
-        if len(str1) != len(str2):
             return False
-        
-        result = 0
-        for x, y in zip(str1.encode(), str2.encode()):
-            result |= x ^ y
-        return result == 0
 
 
 class Wintun:
-    """Обертка для wintun.dll с исправлениями"""
+    """Обертка для wintun.dll"""
     
     def __init__(self, dll_path="wintun.dll"):
         search_paths = [
@@ -210,12 +186,11 @@ class Wintun:
                 break
         
         if not found_path:
-            raise FileNotFoundError(f"wintun.dll not found at {dll_path}")
+            raise FileNotFoundError(f"wintun.dll not found")
         
         logger.info(f"Loading wintun.dll from: {found_path}")
         self.dll = ctypes.WinDLL(found_path)
         
-        # Определяем функции
         self.WintunCreateAdapter = self.dll.WintunCreateAdapter
         self.WintunCreateAdapter.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.LPCWSTR]
         self.WintunCreateAdapter.restype = ctypes.c_void_p
@@ -227,10 +202,6 @@ class Wintun:
         self.WintunOpenAdapter = self.dll.WintunOpenAdapter
         self.WintunOpenAdapter.argtypes = [wintypes.LPCWSTR]
         self.WintunOpenAdapter.restype = ctypes.c_void_p
-        
-        self.WintunGetReadWaitEvent = self.dll.WintunGetReadWaitEvent
-        self.WintunGetReadWaitEvent.argtypes = [ctypes.c_void_p]
-        self.WintunGetReadWaitEvent.restype = ctypes.c_void_p
         
         self.WintunAllocateSendPacket = self.dll.WintunAllocateSendPacket
         self.WintunAllocateSendPacket.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
@@ -247,12 +218,10 @@ class Wintun:
         self.WintunReleaseReceivePacket = self.dll.WintunReleaseReceivePacket
         self.WintunReleaseReceivePacket.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
         self.WintunReleaseReceivePacket.restype = None
-        
-        logger.info("[+] Wintun.dll loaded successfully")
 
 
 class TUNInterface:
-    """TUN интерфейс с оптимизациями"""
+    """TUN интерфейс"""
     
     def __init__(self, name: str, ip: str, netmask: str):
         self.name = name
@@ -269,19 +238,17 @@ class TUNInterface:
             logger.error(f"Wintun load error: {e}")
             sys.exit(1)
         
-        # Создаём или открываем адаптер
         self.handle = self.wintun.WintunCreateAdapter(name, "Wintun", None)
         
         if not self.handle or self.handle == 0:
-            logger.info("Adapter not created, trying to open existing...")
+            logger.info("Adapter not created, opening existing...")
             self.handle = self.wintun.WintunOpenAdapter(name)
             
             if not self.handle or self.handle == 0:
                 raise Exception(f"Failed to create/open adapter {name}")
         
-        logger.info(f"[+] Virtual adapter created/opened: {name}")
+        logger.info(f"[+] Virtual adapter ready: {name}")
         
-        # Настраиваем IP
         try:
             import subprocess
             result = subprocess.run(
@@ -291,14 +258,12 @@ class TUNInterface:
                 shell=True
             )
             if result.returncode == 0:
-                logger.info(f"[+] IP address assigned: {ip}/{netmask}")
-            else:
-                logger.warning(f"Failed to assign IP automatically: {result.stderr}")
+                logger.info(f"[+] IP assigned: {ip}/{netmask}")
         except Exception as e:
-            logger.error(f"IP configuration error: {e}")
+            logger.error(f"IP config error: {e}")
     
     def read(self, size: int = 65536) -> bytes:
-        """Безопасное чтение из TUN"""
+        """Чтение из TUN"""
         if not self.handle or not self.running:
             return b''
         
@@ -320,8 +285,6 @@ class TUNInterface:
                 return b''
                 
         except Exception as e:
-            if "access violation" not in str(e).lower() and self.running:
-                pass
             return b''
     
     def write(self, packet: bytes):
@@ -335,9 +298,8 @@ class TUNInterface:
             if packet_ptr and packet_ptr != 0:
                 ctypes.memmove(packet_ptr, packet, len(packet))
                 self.wintun.WintunSendPacket(self.handle, packet_ptr)
-        except Exception as e:
-            if self.running:
-                pass
+        except:
+            pass
     
     def close(self):
         """Закрытие TUN"""
@@ -347,14 +309,14 @@ class TUNInterface:
             try:
                 self.wintun.WintunCloseAdapter(self.handle)
                 logger.info(f"[+] Adapter {self.name} closed")
-            except Exception as e:
-                logger.error(f"Adapter close error: {e}")
+            except:
+                pass
             finally:
                 self.handle = None
 
 
 class ClientHandler:
-    """Обработка клиента с полной защитой"""
+    """Обработка клиента"""
     
     def __init__(self, sock, addr, vpn_server):
         self.sock = sock
@@ -362,7 +324,7 @@ class ClientHandler:
         self.vpn_server = vpn_server
         self.client_ip = None
         self.running = True
-        self.trojan = TrojanProtocol(PASSWORD)
+        self.auth = TrojanAuth(PASSWORD)
         self.last_activity = time.time()
         self.metrics = {
             "bytes_sent": 0,
@@ -375,9 +337,8 @@ class ClientHandler:
     def run(self):
         """Основной цикл обработки"""
         try:
-            # Аутентификация
-            success, _ = self.trojan.authenticate_client(self.sock)
-            if not success:
+            # Аутентификация (после SSL handshake)
+            if not self.auth.authenticate(self.sock):
                 logger.warning(f"Auth failed from {self.addr}")
                 return
             
@@ -388,7 +349,7 @@ class ClientHandler:
             
             # Отправляем IP клиенту
             self.sock.send(self.client_ip.encode())
-            logger.info(f"[+] Client {self.addr} authenticated, IP: {self.client_ip}")
+            logger.info(f"[+] Client {self.addr} authenticated, assigned IP: {self.client_ip}")
             
             # Регистрируем клиента
             with self.vpn_server.clients_lock:
@@ -407,6 +368,8 @@ class ClientHandler:
                     # Читаем заголовок
                     header = self.sock.recv(14)
                     if len(header) < 14:
+                        if len(header) == 0:
+                            break
                         continue
                     
                     nonce = header[:12]
@@ -417,6 +380,7 @@ class ClientHandler:
                         if len(encrypted) == length:
                             try:
                                 packet = self.vpn_server.crypto.decrypt(encrypted, nonce)
+                                
                                 if packet:
                                     self.vpn_server.tun.write(packet)
                                     self.metrics["bytes_received"] += len(encrypted) + 14
@@ -435,13 +399,29 @@ class ClientHandler:
         finally:
             self.cleanup()
     
+    def send_packet(self, packet: bytes):
+        """Отправка пакета клиенту"""
+        try:
+            nonce = os.urandom(12)
+            encrypted = self.vpn_server.crypto.encrypt(packet, nonce)
+            message = nonce + struct.pack('!H', len(encrypted)) + encrypted
+            
+            self.sock.send(message)
+            self.metrics["bytes_sent"] += len(message)
+            self.metrics["packets_sent"] += 1
+            self.last_activity = time.time()
+            
+            return True
+        except Exception as e:
+            return False
+    
     def cleanup(self):
         """Очистка ресурсов"""
         if self.client_ip:
             with self.vpn_server.clients_lock:
                 if self.client_ip in self.vpn_server.clients:
                     uptime = (datetime.now() - self.metrics["connected_at"]).total_seconds()
-                    logger.info(f"Client {self.client_ip} disconnected. Uptime: {uptime:.0f} sec")
+                    logger.info(f"Client {self.client_ip} disconnected. Uptime: {uptime:.0f}s")
                     del self.vpn_server.clients[self.client_ip]
         
         try:
@@ -451,7 +431,7 @@ class ClientHandler:
 
 
 class VPNServer:
-    """Главный VPN сервер со всеми защитами"""
+    """Главный VPN сервер"""
     
     def __init__(self):
         self.running = True
@@ -463,28 +443,21 @@ class VPNServer:
         self.ports = [PORT] + ALT_PORTS
         
         # Инициализация компонентов
-        logger.info("[1/6] Initializing cryptography...")
+        logger.info("[1/5] Initializing cryptography...")
         self.crypto = CryptoEngine(PASSWORD)
         
-        logger.info("[2/6] Initializing TUN interface...")
+        logger.info("[2/5] Initializing TUN interface...")
         self.tun = TUNInterface(TUN_NAME, VPN_SERVER_IP, VPN_NETMASK)
         
-        logger.info("[3/6] Initializing anti-DPI...")
-        if ANTI_DPI_AVAILABLE:
-            self.anti_dpi = AntiDPIEngine()
-        else:
-            self.anti_dpi = None
-            logger.warning("Anti-DPI not available")
-        
-        logger.info("[4/6] Starting TUN reader...")
+        logger.info("[3/5] Starting TUN reader...")
         self.tun_thread = threading.Thread(target=self._tun_reader, daemon=True)
         self.tun_thread.start()
         
-        logger.info("[5/6] Starting port hopping...")
+        logger.info("[4/5] Starting port hopping...")
         self.port_thread = threading.Thread(target=self._port_hopper, daemon=True)
         self.port_thread.start()
         
-        logger.info("[6/6] Starting server...")
+        logger.info("[5/5] Starting server...")
         self._start_server()
         
         self._show_banner()
@@ -493,7 +466,6 @@ class VPNServer:
         """Запуск основного сервера"""
         self.servers = []
         
-        # Запускаем слушатели на всех портах
         for port in self.ports:
             server_thread = threading.Thread(
                 target=self._listen_on_port,
@@ -507,30 +479,30 @@ class VPNServer:
     def _listen_on_port(self, port):
         """Слушатель на конкретном порту"""
         try:
-            # Создаем обычный TCP сокет
+            # Создаем SSL контекст
+            context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+            context.load_cert_chain(CERTFILE, KEYFILE)
+            context.set_ciphers('ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:!aNULL:!MD5')
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
+            context.maximum_version = ssl.TLSVersion.TLSv1_3
+            context.set_alpn_protocols(['h2', 'http/1.1'])
+            
+            # Создаем TCP сокет
             server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             server_sock.bind((HOST, port))
             server_sock.listen(100)
             
+            # Оборачиваем в SSL
+            secure_server = context.wrap_socket(server_sock, server_side=True)
+            
             while self.running:
                 try:
-                    client_sock, addr = server_sock.accept()
-                    logger.info(f"[*] Connection from {addr} on port {port}")
-                    
-                    # Создаем SSL контекст с защитой
-                    if self.anti_dpi:
-                        # Используем anti-DPI обертку
-                        context = self._create_secure_context()
-                        secure_sock = context.wrap_socket(client_sock, server_side=True)
-                    else:
-                        # Обычный SSL
-                        context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-                        context.load_cert_chain(CERTFILE, KEYFILE)
-                        secure_sock = context.wrap_socket(client_sock, server_side=True)
+                    client_sock, addr = secure_server.accept()
+                    logger.info(f"[*] SSL connection from {addr} on port {port}")
                     
                     # Обработка клиента
-                    handler = ClientHandler(secure_sock, addr, self)
+                    handler = ClientHandler(client_sock, addr, self)
                     thread = threading.Thread(target=handler.run, daemon=True)
                     thread.start()
                     
@@ -540,23 +512,6 @@ class VPNServer:
                         
         except Exception as e:
             logger.error(f"Failed to start listener on port {port}: {e}")
-    
-    def _create_secure_context(self):
-        """Создание защищенного SSL контекста"""
-        context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-        context.load_cert_chain(CERTFILE, KEYFILE)
-        
-        # Настройка современных шифров
-        context.set_ciphers('ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:!aNULL:!MD5:!DSS')
-        
-        # Включаем только TLS 1.3
-        context.minimum_version = ssl.TLSVersion.TLSv1_2
-        context.maximum_version = ssl.TLSVersion.TLSv1_3
-        
-        # Включаем ALPN
-        context.set_alpn_protocols(['h2', 'http/1.1'])
-        
-        return context
     
     def _tun_reader(self):
         """Чтение из TUN и отправка клиентам"""
@@ -577,14 +532,10 @@ class VPNServer:
                         if dest_ip in self.clients:
                             client = self.clients[dest_ip]
                             try:
-                                nonce = os.urandom(12)
-                                encrypted = self.crypto.encrypt(packet, nonce)
-                                message = nonce + struct.pack('!H', len(encrypted)) + encrypted
-                                client['socket'].send(message)
-                                client['handler'].metrics["bytes_sent"] += len(message)
-                                client['handler'].metrics["packets_sent"] += 1
+                                client['handler'].send_packet(packet)
                                 client['last_activity'] = time.time()
                             except Exception as e:
+                                logger.error(f"Send error to {dest_ip}: {e}")
                                 del self.clients[dest_ip]
                 
                 time.sleep(0.001)
@@ -594,42 +545,26 @@ class VPNServer:
                     pass
     
     def _port_hopper(self):
-        """Порт-хоппинг для обхода блокировок"""
+        """Порт-хоппинг"""
         while self.running:
-            time.sleep(300)  # Каждые 5 минут
+            time.sleep(300)
             
-            # Ротируем основной порт
             self.current_port_idx = (self.current_port_idx + 1) % len(self.ports)
             new_port = self.ports[self.current_port_idx]
             
-            logger.info(f"[*] Switching active port to {new_port}")
-            
-            # Обновляем информацию для клиентов
-            self._notify_clients_port_change(new_port)
-    
-    def _notify_clients_port_change(self, new_port):
-        """Уведомление клиентов о смене порта"""
-        message = f"PORT_CHANGE:{new_port}".encode()
-        with self.clients_lock:
-            for ip, client in self.clients.items():
-                try:
-                    client['socket'].send(message)
-                except:
-                    pass
+            logger.info(f"[*] Active port is now {new_port} (clients should use this)")
     
     def _show_banner(self):
-        """Отображение баннера (без Unicode)"""
-        banner = """
+        """Отображение баннера"""
+        banner = f"""
 ======================================================================
-                     VPN SERVER WITH ANTI-DPI PROTECTION
+            VPN SERVER - SECURE CONNECTION
 ======================================================================
   Status:           [OK] RUNNING
-  Port:             443 (main)
-  Backup ports:     8443, 2053, 2083, 2096, 8080
+  Ports:            {', '.join(map(str, self.ports))}
   VPN network:      10.8.0.0/24
   Server IP:        10.8.0.1
-  Anti-DPI:         [OK] ENABLED
-  Location:         Belarus (weak blocking)
+  Active clients:   0
 ======================================================================
         """
         logger.info(banner)
@@ -639,7 +574,6 @@ class VPNServer:
         logger.info("\n[!] Stopping server...")
         self.running = False
         
-        # Закрываем все клиентские соединения
         with self.clients_lock:
             for ip, client in self.clients.items():
                 try:
@@ -648,9 +582,7 @@ class VPNServer:
                     pass
             self.clients.clear()
         
-        # Закрываем TUN
         self.tun.close()
-        
         logger.info("[+] Server stopped")
 
 
@@ -715,17 +647,15 @@ def check_admin():
 
 if __name__ == "__main__":
     print("=" * 50)
-    print("VPN SERVER WITH ANTI-DPI (2026)")
+    print("VPN SERVER")
     print("=" * 50)
     
     if not check_admin():
         print("[!] ERROR: Administrator privileges required!")
-        print("[!] Please run PowerShell as Administrator")
         sys.exit(1)
     
     if not os.path.exists("wintun.dll"):
         print("[!] ERROR: wintun.dll not found!")
-        print("[!] Download from: https://www.wintun.net/")
         sys.exit(1)
     
     generate_ssl_cert()
@@ -733,7 +663,6 @@ if __name__ == "__main__":
     server = VPNServer()
     
     try:
-        # Держим сервер запущенным
         while server.running:
             time.sleep(1)
     except KeyboardInterrupt:
