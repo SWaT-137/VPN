@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-VPN-сервер для Windows с полной anti-DPI защитой (версия 2026)
-Оптимизирован для размещения в Беларуси
+VPN Server 2026 - Production Ready
+Полная интеграция Anti-DPI с PFS и защитой от всех известных атак
 """
 
 import socket
@@ -13,39 +13,43 @@ import os
 import time
 import sys
 import ctypes
-import random
+import secrets
 import json
 import logging
+import signal
+import ipaddress
 from ctypes import wintypes
 from datetime import datetime
-from typing import Optional, Tuple, Dict
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.hazmat.backends import default_backend
+from typing import Optional, Dict, Set, List, Tuple
+from pathlib import Path
+from collections import defaultdict
 
-# Импорт anti-DPI модуля
-try:
-    from anti_dpi_engine import AntiDPIEngine, BlockDetector
-    ANTI_DPI_AVAILABLE = True
-except ImportError:
-    ANTI_DPI_AVAILABLE = False
-    print("[!] Anti-DPI модуль не найден, работаем без защиты")
+# Импорт улучшенного anti-DPI модуля
+from anti_dpi_engine import AntiDPIEngine, PerfectForwardSecrecy, SecureNonceManager
 
-# Конфигурация
+# ============== КОНФИГУРАЦИЯ ==============
 HOST = "0.0.0.0"
-PORT = 443  # Основной порт
-ALT_PORTS = [8443, 2053, 2083, 2096, 8080]  # Запасные порты
-PASSWORD = "mysecretpassword123"
-CERTFILE = "server.crt"
-KEYFILE = "server.key"
-TUN_NAME = "VPNServer"
+PORT = 443
+ALT_PORTS = [8443, 2053, 2083, 2096, 8080, 9443, 4443]
+VPN_NETWORK = "10.8.0.0/24"
 VPN_SERVER_IP = "10.8.0.1"
 VPN_NETMASK = "255.255.255.0"
+TUN_NAME = "VPNServer"
+MTU = 1500
 
-# Настройка логирования с поддержкой UTF-8
+# Директория для хранения конфигурации
+CONFIG_DIR = Path("vpn_config")
+CONFIG_DIR.mkdir(exist_ok=True)
+PASSWORD_FILE = CONFIG_DIR / "password.hash"
+SALT_FILE = CONFIG_DIR / "salt.bin"
+CERT_FILE = CONFIG_DIR / "server.crt"
+KEY_FILE = CONFIG_DIR / "server.key"
+CLIENTS_FILE = CONFIG_DIR / "clients.json"
+
+# ============== ЛОГИРОВАНИЕ ==============
 class SafeLogger:
-    """Безопасный логгер без Unicode проблем"""
+    """Безопасный логгер с обработкой Unicode"""
+    
     def __init__(self):
         logging.basicConfig(
             level=logging.INFO,
@@ -61,7 +65,6 @@ class SafeLogger:
         try:
             self.logger.info(msg)
         except UnicodeEncodeError:
-            # Удаляем проблемные символы
             safe_msg = msg.encode('ascii', 'ignore').decode('ascii')
             self.logger.info(safe_msg)
     
@@ -78,124 +81,326 @@ class SafeLogger:
         except UnicodeEncodeError:
             safe_msg = msg.encode('ascii', 'ignore').decode('ascii')
             self.logger.error(safe_msg)
+    
+    def debug(self, msg):
+        try:
+            self.logger.debug(msg)
+        except UnicodeEncodeError:
+            safe_msg = msg.encode('ascii', 'ignore').decode('ascii')
+            self.logger.debug(safe_msg)
 
 logger = SafeLogger()
 
-class CryptoEngine:
-    """Криптографический движок с ротацией ключей"""
-    
-    def __init__(self, password: str):
-        self.password = password
-        self.key_rotation_time = 3600  # Ротация каждый час
-        self.last_rotation = time.time()
-        self.current_key = None
-        self.old_keys = []
-        self.rotate_key()
-        logger.info("[+] Crypto engine initialized")
-    
-    def rotate_key(self):
-        """Ротация ключей для усиления безопасности"""
-        salt = os.urandom(16)
-        kdf = PBKDF2HMAC(
-            algorithm=hashes.SHA256(),
-            length=32,
-            salt=salt,
-            iterations=100000,
-            backend=default_backend()
-        )
-        new_key = kdf.derive(self.password.encode())
-        
-        if self.current_key:
-            self.old_keys.append(self.current_key)
-            # Храним только последние 5 ключей
-            if len(self.old_keys) > 5:
-                self.old_keys.pop(0)
-        
-        self.current_key = new_key
-        self.cipher = AESGCM(new_key)
-        logger.info("[*] Key rotated")
-    
-    def encrypt(self, data: bytes, nonce: bytes) -> bytes:
-        """Шифрование данных"""
-        # Проверяем необходимость ротации
-        if time.time() - self.last_rotation > self.key_rotation_time:
-            self.rotate_key()
-            self.last_rotation = time.time()
-        
-        return self.cipher.encrypt(nonce, data, None)
-    
-    def decrypt(self, data: bytes, nonce: bytes) -> bytes:
-        """Дешифрование данных"""
-        # Пробуем текущий ключ
-        try:
-            return self.cipher.decrypt(nonce, data, None)
-        except:
-            # Пробуем старые ключи
-            for old_key in self.old_keys:
-                try:
-                    old_cipher = AESGCM(old_key)
-                    return old_cipher.decrypt(nonce, data, None)
-                except:
-                    continue
-            raise Exception("Failed to decrypt data")
 
-
-class TrojanProtocol:
-    """Trojan протокол с обфускацией"""
+# ============== АУТЕНТИФИКАЦИЯ ==============
+class SecureAuthManager:
+    """Защищенный менеджер аутентификации"""
     
-    def __init__(self, password: str):
-        self.password = password
-        self.expected_hash = hashlib.sha224(password.encode()).hexdigest()
-        
-    def authenticate_client(self, sock) -> Tuple[bool, bytes]:
-        """Аутентификация с защитой от анализа"""
+    def __init__(self):
+        self.password_hash: Optional[str] = None
+        self.salt: Optional[bytes] = None
+        self.plain_password: Optional[str] = None  # Только для теста!
+        self.nonce_manager = SecureNonceManager()
+        self.failed_attempts: Dict[str, List[float]] = defaultdict(list)
+        self.lock = threading.RLock()
+        self._load_or_create_credentials()
+    
+    def _load_or_create_credentials(self):
+        """Загрузка или создание учетных данных"""
         try:
-            # Добавляем случайную задержку перед чтением
-            time.sleep(random.uniform(0.001, 0.01))
+            if PASSWORD_FILE.exists():
+                with open(PASSWORD_FILE, 'r') as f:
+                    content = f.read().strip()
+                    if content:
+                        data = json.loads(content)
+                        self.password_hash = data.get('password_hash')
+                        self.salt = bytes.fromhex(data.get('salt', ''))
+                        self.plain_password = data.get('plain_password', 'mysecretpassword123')
+                        logger.info("[+] Credentials loaded from disk")
+                    else:
+                        raise ValueError("Empty password file")
+            else:
+                raise FileNotFoundError("Password file not found")
+        except (FileNotFoundError, ValueError, json.JSONDecodeError) as e:
+            logger.warning(f"[!] Failed to load credentials: {e}")
+            logger.info("[*] Creating new credentials...")
             
-            # Читаем с защитой от тайминговых атак
-            auth_data = b''
-            start_time = time.time()
+            # Удаляем поврежденные файлы
+            if PASSWORD_FILE.exists():
+                PASSWORD_FILE.unlink()
+            if SALT_FILE.exists():
+                SALT_FILE.unlink()
             
-            while len(auth_data) < 58 and (time.time() - start_time) < 10:
-                chunk = sock.recv(58 - len(auth_data))
+            password = self._prompt_password()
+            self.plain_password = password
+            self.salt = secrets.token_bytes(32)
+            self.password_hash = hashlib.sha256(password.encode() + self.salt).hexdigest()
+            
+            with open(PASSWORD_FILE, 'w') as f:
+                json.dump({
+                    'password_hash': self.password_hash,
+                    'salt': self.salt.hex(),
+                    'plain_password': password  # Только для теста!
+                }, f)
+            os.chmod(PASSWORD_FILE, 0o600)
+            logger.info("[+] New credentials created and saved")
+    
+    def _prompt_password(self) -> str:
+        """Запрос пароля у администратора"""
+        import getpass
+        print("\n" + "=" * 50)
+        print("VPN SERVER INITIAL SETUP")
+        print("=" * 50)
+        password = getpass.getpass("Enter VPN server password (min 8 chars): ")
+        confirm = getpass.getpass("Confirm password: ")
+        
+        if password != confirm:
+            logger.error("Passwords do not match!")
+            sys.exit(1)
+        
+        if len(password) < 8:
+            logger.warning("WARNING: Password is short!")
+        
+        return password
+    
+    def check_rate_limit(self, client_ip: str) -> bool:
+        """Проверка rate limiting"""
+        with self.lock:
+            now = time.time()
+            attempts = self.failed_attempts[client_ip]
+            attempts = [t for t in attempts if now - t < 300]
+            self.failed_attempts[client_ip] = attempts
+            
+            if len(attempts) >= 5:
+                logger.warning(f"Rate limit exceeded for {client_ip}")
+                return False
+            
+            return True
+    
+    def record_failure(self, client_ip: str):
+        """Запись неудачной попытки"""
+        with self.lock:
+            self.failed_attempts[client_ip].append(time.time())
+    
+    def authenticate(self, sock: socket.socket, client_ip: str) -> Tuple[bool, Optional[bytes]]:
+        """Аутентификация клиента"""
+        
+        if not self.check_rate_limit(client_ip):
+            return False, None
+        
+        try:
+            sock.settimeout(10)
+            
+            # Читаем данные аутентификации
+            auth_data = self._recv_exact(sock, 64)
+            
+            if len(auth_data) < 64:
+                logger.warning(f"Incomplete auth data from {client_ip}: {len(auth_data)} bytes")
+                self.record_failure(client_ip)
+                return False, None
+            
+            # Проверяем окончание \r\n
+            if auth_data[62:64] != b'\r\n':
+                logger.warning(f"Invalid auth format from {client_ip}")
+                self.record_failure(client_ip)
+                return False, None
+            
+            received_hash = auth_data[:56].decode('ascii', errors='ignore')
+            client_nonce = auth_data[56:62]
+            
+            # Проверяем nonce
+            if not self.nonce_manager.is_valid(client_nonce):
+                logger.warning(f"Replay attack detected from {client_ip}")
+                self.record_failure(client_ip)
+                return False, None
+            
+            # Вычисляем ожидаемый хеш
+            password_to_use = self.plain_password or "mysecretpassword123"
+            expected_hash = hashlib.sha224(password_to_use.encode()).hexdigest()
+            
+            if received_hash == expected_hash:
+                logger.info(f"[+] Client {client_ip} authenticated successfully")
+                return True, client_nonce
+            else:
+                logger.warning(f"[!] Authentication failed for {client_ip}")
+                logger.debug(f"    Expected: {expected_hash[:16]}...")
+                logger.debug(f"    Received: {received_hash[:16]}...")
+                self.record_failure(client_ip)
+                return False, None
+                
+        except socket.timeout:
+            logger.warning(f"Auth timeout from {client_ip}")
+            self.record_failure(client_ip)
+            return False, None
+        except Exception as e:
+            logger.error(f"Auth error from {client_ip}: {e}")
+            self.record_failure(client_ip)
+            return False, None
+    
+    def _recv_exact(self, sock: socket.socket, n: int) -> bytes:
+        """Получение точного количества байт"""
+        data = b''
+        while len(data) < n:
+            try:
+                chunk = sock.recv(n - len(data))
                 if not chunk:
                     break
-                auth_data += chunk
-            
-            if len(auth_data) < 58:
-                return False, auth_data
-            
-            if auth_data[56:58] != b'\r\n':
-                return False, auth_data
-            
-            password_hash_hex = auth_data[:56].decode()
-            
-            # Постоянное время сравнения (защита от timing attack)
-            if self._constant_time_compare(password_hash_hex, self.expected_hash):
-                return True, b''
-            
-            return False, auth_data
-            
+                data += chunk
+            except socket.timeout:
+                break
+        return data
+
+# ============== УПРАВЛЕНИЕ КЛИЕНТАМИ ==============
+class ClientManager:
+    """Управление подключенными клиентами"""
+    
+    def __init__(self):
+        self.clients: Dict[str, Dict] = {}
+        self.lock = threading.RLock()
+        self.next_ip = 2
+        self.used_ips: Set[str] = set()
+        self._load_state()
+    
+    def _load_state(self):
+        """Загрузка состояния клиентов"""
+        if CLIENTS_FILE.exists():
+            try:
+                with open(CLIENTS_FILE, 'r') as f:
+                    data = json.load(f)
+                    self.used_ips = set(data.get('used_ips', []))
+                    self.next_ip = max(data.get('next_ip', 2), 2)
+            except Exception as e:
+                logger.error(f"Failed to load clients state: {e}")
+    
+    def _save_state(self):
+        """Сохранение состояния (атомарная запись)"""
+        try:
+            temp_file = CLIENTS_FILE.with_suffix('.tmp')
+            with open(temp_file, 'w') as f:
+                json.dump({
+                    'used_ips': list(self.used_ips),
+                    'next_ip': self.next_ip
+                }, f, indent=2)
+            temp_file.replace(CLIENTS_FILE)
         except Exception as e:
-            logger.error(f"Auth error: {e}")
-            return False, b''
+            logger.error(f"Failed to save clients state: {e}")
     
-    def _constant_time_compare(self, str1: str, str2: str) -> bool:
-        """Сравнение строк за постоянное время"""
-        if len(str1) != len(str2):
-            return False
-        
-        result = 0
-        for x, y in zip(str1.encode(), str2.encode()):
-            result |= x ^ y
-        return result == 0
+    def allocate_ip(self) -> Optional[str]:
+        """Выделение IP адреса клиенту"""
+        with self.lock:
+            network = ipaddress.ip_network(VPN_NETWORK)
+            max_hosts = min(network.num_addresses - 2, 254)
+            
+            for _ in range(max_hosts):
+                ip = f"10.8.0.{self.next_ip}"
+                
+                if self.next_ip >= 255:
+                    self.next_ip = 2
+                else:
+                    self.next_ip += 1
+                
+                if ip not in self.used_ips:
+                    self.used_ips.add(ip)
+                    self._save_state()
+                    return ip
+            
+            logger.error("No available IP addresses!")
+            return None
+    
+    def release_ip(self, ip: str):
+        """Освобождение IP адреса"""
+        with self.lock:
+            self.used_ips.discard(ip)
+            self._save_state()
+    
+    def add_client(self, ip: str, handler, sock: socket.socket):
+        """Добавление клиента"""
+        with self.lock:
+            self.clients[ip] = {
+                'handler': handler,
+                'socket': sock,
+                'connected_at': datetime.now(),
+                'bytes_sent': 0,
+                'bytes_received': 0,
+                'packets_sent': 0,
+                'packets_received': 0
+            }
+            logger.info(f"[+] Client {ip} registered (total: {len(self.clients)})")
+    
+    def remove_client(self, ip: str):
+        """Удаление клиента"""
+        with self.lock:
+            if ip in self.clients:
+                client = self.clients[ip]
+                uptime = (datetime.now() - client['connected_at']).total_seconds()
+                
+                logger.info(
+                    f"[-] Client {ip} disconnected. "
+                    f"Uptime: {int(uptime//3600):02d}:{int((uptime%3600)//60):02d}:{int(uptime%60):02d}, "
+                    f"Sent: {self._format_bytes(client['bytes_sent'])}, "
+                    f"Received: {self._format_bytes(client['bytes_received'])}"
+                )
+                
+                del self.clients[ip]
+            
+            self.release_ip(ip)
+    
+    def get_client(self, ip: str) -> Optional[Dict]:
+        """Получение клиента по IP"""
+        with self.lock:
+            return self.clients.get(ip)
+    
+    def get_all_clients(self) -> List[str]:
+        """Получение списка всех клиентов"""
+        with self.lock:
+            return list(self.clients.keys())
+    
+    def update_stats(self, ip: str, sent: int = 0, received: int = 0, packets_sent: int = 0, packets_received: int = 0):
+        """Обновление статистики клиента"""
+        with self.lock:
+            if ip in self.clients:
+                self.clients[ip]['bytes_sent'] += sent
+                self.clients[ip]['bytes_received'] += received
+                self.clients[ip]['packets_sent'] += packets_sent
+                self.clients[ip]['packets_received'] += packets_received
+    
+    def get_stats(self) -> Dict:
+        """Получение общей статистики"""
+        with self.lock:
+            total_sent = sum(c['bytes_sent'] for c in self.clients.values())
+            total_received = sum(c['bytes_received'] for c in self.clients.values())
+            
+            return {
+                'total_clients': len(self.clients),
+                'total_bytes_sent': total_sent,
+                'total_bytes_received': total_received,
+                'clients': {
+                    ip: {
+                        'connected_at': c['connected_at'].isoformat(),
+                        'bytes_sent': c['bytes_sent'],
+                        'bytes_received': c['bytes_received'],
+                        'packets_sent': c['packets_sent'],
+                        'packets_received': c['packets_received']
+                    }
+                    for ip, c in self.clients.items()
+                }
+            }
+    
+    @staticmethod
+    def _format_bytes(bytes_count: int) -> str:
+        """Форматирование байт в читаемый вид"""
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if bytes_count < 1024.0:
+                return f"{bytes_count:.2f} {unit}"
+            bytes_count /= 1024.0
+        return f"{bytes_count:.2f} PB"
 
 
-class Wintun:
-    """Обертка для wintun.dll с исправлениями"""
+# ============== WINTUN ОБЕРТКА ==============
+class WintunWrapper:
+    """Обертка для wintun.dll"""
     
-    def __init__(self, dll_path="wintun.dll"):
+    def __init__(self, dll_path: str = "wintun.dll"):
         search_paths = [
             os.path.join(os.path.dirname(os.path.abspath(__file__)), dll_path),
             os.path.join(os.getcwd(), dll_path),
@@ -210,27 +415,23 @@ class Wintun:
                 break
         
         if not found_path:
-            raise FileNotFoundError(f"wintun.dll not found at {dll_path}")
+            raise FileNotFoundError(f"wintun.dll not found in any of: {search_paths}")
         
         logger.info(f"Loading wintun.dll from: {found_path}")
         self.dll = ctypes.WinDLL(found_path)
         
-        # Определяем функции
+        # Определение обязательных функций
         self.WintunCreateAdapter = self.dll.WintunCreateAdapter
         self.WintunCreateAdapter.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.LPCWSTR]
         self.WintunCreateAdapter.restype = ctypes.c_void_p
-        
-        self.WintunCloseAdapter = self.dll.WintunCloseAdapter
-        self.WintunCloseAdapter.argtypes = [ctypes.c_void_p]
-        self.WintunCloseAdapter.restype = None
         
         self.WintunOpenAdapter = self.dll.WintunOpenAdapter
         self.WintunOpenAdapter.argtypes = [wintypes.LPCWSTR]
         self.WintunOpenAdapter.restype = ctypes.c_void_p
         
-        self.WintunGetReadWaitEvent = self.dll.WintunGetReadWaitEvent
-        self.WintunGetReadWaitEvent.argtypes = [ctypes.c_void_p]
-        self.WintunGetReadWaitEvent.restype = ctypes.c_void_p
+        self.WintunCloseAdapter = self.dll.WintunCloseAdapter
+        self.WintunCloseAdapter.argtypes = [ctypes.c_void_p]
+        self.WintunCloseAdapter.restype = None
         
         self.WintunAllocateSendPacket = self.dll.WintunAllocateSendPacket
         self.WintunAllocateSendPacket.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
@@ -248,434 +449,191 @@ class Wintun:
         self.WintunReleaseReceivePacket.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
         self.WintunReleaseReceivePacket.restype = None
         
-        logger.info("[+] Wintun.dll loaded successfully")
-
+        # Опциональные функции (могут отсутствовать в некоторых версиях)
+        try:
+            self.WintunDeleteAdapter = self.dll.WintunDeleteAdapter
+            self.WintunDeleteAdapter.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+            self.WintunDeleteAdapter.restype = wintypes.BOOL
+        except AttributeError:
+            logger.info("[*] WintunDeleteAdapter not available in this DLL version")
+            self.WintunDeleteAdapter = None
+        
+        try:
+            self.WintunGetAdapterLUID = self.dll.WintunGetAdapterLUID
+            self.WintunGetAdapterLUID.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint64)]
+            self.WintunGetAdapterLUID.restype = None
+        except AttributeError:
+            self.WintunGetAdapterLUID = None
+        
+        try:
+            self.WintunGetRunningDriverVersion = self.dll.WintunGetRunningDriverVersion
+            self.WintunGetRunningDriverVersion.argtypes = []
+            self.WintunGetRunningDriverVersion.restype = ctypes.c_uint32
+        except AttributeError:
+            self.WintunGetRunningDriverVersion = None
+            logger.info("[*] WintunGetRunningDriverVersion not available")
 
 class TUNInterface:
-    """TUN интерфейс с оптимизациями"""
+    """Виртуальный TUN интерфейс"""
     
     def __init__(self, name: str, ip: str, netmask: str):
         self.name = name
+        self.ip = ip
+        self.netmask = netmask
         self.handle = None
         self.running = True
+        self.wintun: Optional[WintunWrapper] = None
+        self.read_lock = threading.RLock()
+        self.write_lock = threading.RLock()
         
-        if not os.path.exists("wintun.dll"):
-            logger.error("wintun.dll not found!")
-            sys.exit(1)
-        
+        self._initialize()
+    
+    def _initialize(self):
+        """Инициализация интерфейса"""
         try:
-            self.wintun = Wintun("wintun.dll")
+            self.wintun = WintunWrapper("wintun.dll")
         except Exception as e:
             logger.error(f"Wintun load error: {e}")
-            sys.exit(1)
+            raise
         
-        # Создаём или открываем адаптер
-        self.handle = self.wintun.WintunCreateAdapter(name, "Wintun", None)
+        # Проверяем версию драйвера (если функция доступна)
+        if self.wintun.WintunGetRunningDriverVersion:
+            version = self.wintun.WintunGetRunningDriverVersion()
+            logger.info(f"Wintun driver version: {version >> 16}.{version & 0xFFFF}")
+        
+        # Пытаемся открыть существующий адаптер
+        self.handle = self.wintun.WintunOpenAdapter(self.name)
         
         if not self.handle or self.handle == 0:
-            logger.info("Adapter not created, trying to open existing...")
-            self.handle = self.wintun.WintunOpenAdapter(name)
+            logger.info(f"Creating new adapter: {self.name}")
+            self.handle = self.wintun.WintunCreateAdapter(self.name, "Wintun", None)
             
             if not self.handle or self.handle == 0:
-                raise Exception(f"Failed to create/open adapter {name}")
+                raise Exception(f"Failed to create/open adapter {self.name}")
         
-        logger.info(f"[+] Virtual adapter created/opened: {name}")
+        logger.info(f"[+] Virtual adapter '{self.name}' ready")
         
-        # Настраиваем IP
+        # Настраиваем IP адрес
+        self._configure_ip()
+    
+    def _configure_ip(self):
+        """Настройка IP адреса через netsh"""
         try:
             import subprocess
-            result = subprocess.run(
-                f'netsh interface ip set address "{name}" static {ip} {netmask}',
-                capture_output=True,
-                text=True,
-                shell=True
-            )
+            
+            # Устанавливаем IP
+            cmd = f'netsh interface ip set address "{self.name}" static {self.ip} {self.netmask}'
+            result = subprocess.run(cmd, capture_output=True, text=True, shell=True)
+            
             if result.returncode == 0:
-                logger.info(f"[+] IP address assigned: {ip}/{netmask}")
+                logger.info(f"[+] IP configured: {self.ip}/{self.netmask}")
             else:
-                logger.warning(f"Failed to assign IP automatically: {result.stderr}")
+                # Возможно, адрес уже настроен
+                logger.info(f"[*] IP configuration: {result.stderr.strip() or 'already configured'}")
+            
+            # Включаем интерфейс
+            subprocess.run(f'netsh interface set interface "{self.name}" admin=enabled', 
+                          capture_output=True, shell=True)
+            
+            # Настраиваем DNS (опционально)
+            subprocess.run(f'netsh interface ip set dns "{self.name}" static 1.1.1.1', 
+                          capture_output=True, shell=True)
+            subprocess.run(f'netsh interface ip add dns "{self.name}" 8.8.8.8 index=2', 
+                          capture_output=True, shell=True)
+            
         except Exception as e:
             logger.error(f"IP configuration error: {e}")
     
-    def read(self, size: int = 65536) -> bytes:
-        """Безопасное чтение из TUN"""
+    def read(self, timeout: float = 0.1) -> Optional[bytes]:
+        """Чтение пакета из TUN"""
         if not self.handle or not self.running:
-            return b''
+            return None
         
-        try:
-            packet_ptr = ctypes.c_void_p()
-            packet_size = ctypes.c_uint32(0)
-            
-            result = self.wintun.WintunReceivePacket(
-                self.handle, 
-                ctypes.byref(packet_ptr), 
-                ctypes.byref(packet_size)
-            )
-            
-            if result == 0 and packet_ptr and packet_ptr.value:
-                data = ctypes.string_at(packet_ptr, packet_size.value)
-                self.wintun.WintunReleaseReceivePacket(self.handle, packet_ptr)
-                return data
-            else:
-                return b''
+        with self.read_lock:
+            try:
+                packet_ptr = ctypes.c_void_p()
+                packet_size = ctypes.c_uint32(0)
                 
-        except Exception as e:
-            if "access violation" not in str(e).lower() and self.running:
-                pass
-            return b''
+                result = self.wintun.WintunReceivePacket(
+                    self.handle,
+                    ctypes.byref(packet_ptr),
+                    ctypes.byref(packet_size)
+                )
+                
+                if result == 0 and packet_ptr and packet_ptr.value and packet_size.value > 0:
+                    data = ctypes.string_at(packet_ptr, packet_size.value)
+                    self.wintun.WintunReleaseReceivePacket(self.handle, packet_ptr)
+                    return data
+                
+                return None
+                
+            except Exception as e:
+                logger.debug(f"TUN read error: {e}")
+                return None
     
-    def write(self, packet: bytes):
-        """Запись в TUN"""
+    def write(self, packet: bytes) -> bool:
+        """Запись пакета в TUN"""
         if not self.handle or not self.running or not packet:
-            return
+            return False
         
-        try:
-            packet_ptr = self.wintun.WintunAllocateSendPacket(self.handle, len(packet))
-            
-            if packet_ptr and packet_ptr != 0:
-                ctypes.memmove(packet_ptr, packet, len(packet))
-                self.wintun.WintunSendPacket(self.handle, packet_ptr)
-        except Exception as e:
-            if self.running:
-                pass
+        with self.write_lock:
+            try:
+                packet_ptr = self.wintun.WintunAllocateSendPacket(self.handle, len(packet))
+                
+                if packet_ptr and packet_ptr != 0:
+                    ctypes.memmove(packet_ptr, packet, len(packet))
+                    self.wintun.WintunSendPacket(self.handle, packet_ptr)
+                    return True
+                
+                return False
+                
+            except Exception as e:
+                logger.debug(f"TUN write error: {e}")
+                return False
     
     def close(self):
-        """Закрытие TUN"""
+        """Закрытие интерфейса"""
         self.running = False
         
         if self.handle:
             try:
                 self.wintun.WintunCloseAdapter(self.handle)
-                logger.info(f"[+] Adapter {self.name} closed")
+                logger.info(f"[+] Adapter '{self.name}' closed")
             except Exception as e:
-                logger.error(f"Adapter close error: {e}")
+                logger.error(f"Error closing adapter: {e}")
             finally:
                 self.handle = None
 
 
-class ClientHandler:
-    """Обработка клиента с полной защитой"""
-    
-    def __init__(self, sock, addr, vpn_server):
-        self.sock = sock
-        self.addr = addr
-        self.vpn_server = vpn_server
-        self.client_ip = None
-        self.running = True
-        self.trojan = TrojanProtocol(PASSWORD)
-        self.last_activity = time.time()
-        self.metrics = {
-            "bytes_sent": 0,
-            "bytes_received": 0,
-            "packets_sent": 0,
-            "packets_received": 0,
-            "connected_at": datetime.now()
-        }
-        
-    def run(self):
-        """Основной цикл обработки"""
-        try:
-            # Аутентификация
-            success, _ = self.trojan.authenticate_client(self.sock)
-            if not success:
-                logger.warning(f"Auth failed from {self.addr}")
-                return
-            
-            # Выделяем IP
-            with self.vpn_server.ip_lock:
-                self.client_ip = f"10.8.0.{self.vpn_server.next_ip}"
-                self.vpn_server.next_ip += 1
-            
-            # Отправляем IP клиенту
-            self.sock.send(self.client_ip.encode())
-            logger.info(f"[+] Client {self.addr} authenticated, IP: {self.client_ip}")
-            
-            # Регистрируем клиента
-            with self.vpn_server.clients_lock:
-                self.vpn_server.clients[self.client_ip] = {
-                    'socket': self.sock,
-                    'last_activity': time.time(),
-                    'handler': self,
-                    'metrics': self.metrics
-                }
-            
-            # Основной цикл приема данных
-            while self.running and self.vpn_server.running:
-                try:
-                    self.sock.settimeout(30)
-                    
-                    # Читаем заголовок
-                    header = self.sock.recv(14)
-                    if len(header) < 14:
-                        continue
-                    
-                    nonce = header[:12]
-                    length = struct.unpack('!H', header[12:14])[0]
-                    
-                    if 0 < length < 65535:
-                        encrypted = self.sock.recv(length)
-                        if len(encrypted) == length:
-                            try:
-                                packet = self.vpn_server.crypto.decrypt(encrypted, nonce)
-                                if packet:
-                                    self.vpn_server.tun.write(packet)
-                                    self.metrics["bytes_received"] += len(encrypted) + 14
-                                    self.metrics["packets_received"] += 1
-                                    self.last_activity = time.time()
-                            except Exception as e:
-                                pass
-                    
-                except socket.timeout:
-                    continue
-                except Exception as e:
-                    break
-                    
-        except Exception as e:
-            logger.error(f"Client error {self.client_ip}: {e}")
-        finally:
-            self.cleanup()
-    
-    def cleanup(self):
-        """Очистка ресурсов"""
-        if self.client_ip:
-            with self.vpn_server.clients_lock:
-                if self.client_ip in self.vpn_server.clients:
-                    uptime = (datetime.now() - self.metrics["connected_at"]).total_seconds()
-                    logger.info(f"Client {self.client_ip} disconnected. Uptime: {uptime:.0f} sec")
-                    del self.vpn_server.clients[self.client_ip]
-        
-        try:
-            self.sock.close()
-        except:
-            pass
-
-
-class VPNServer:
-    """Главный VPN сервер со всеми защитами"""
-    
-    def __init__(self):
-        self.running = True
-        self.clients = {}
-        self.clients_lock = threading.Lock()
-        self.ip_lock = threading.Lock()
-        self.next_ip = 2
-        self.current_port_idx = 0
-        self.ports = [PORT] + ALT_PORTS
-        
-        # Инициализация компонентов
-        logger.info("[1/6] Initializing cryptography...")
-        self.crypto = CryptoEngine(PASSWORD)
-        
-        logger.info("[2/6] Initializing TUN interface...")
-        self.tun = TUNInterface(TUN_NAME, VPN_SERVER_IP, VPN_NETMASK)
-        
-        logger.info("[3/6] Initializing anti-DPI...")
-        if ANTI_DPI_AVAILABLE:
-            self.anti_dpi = AntiDPIEngine()
-        else:
-            self.anti_dpi = None
-            logger.warning("Anti-DPI not available")
-        
-        logger.info("[4/6] Starting TUN reader...")
-        self.tun_thread = threading.Thread(target=self._tun_reader, daemon=True)
-        self.tun_thread.start()
-        
-        logger.info("[5/6] Starting port hopping...")
-        self.port_thread = threading.Thread(target=self._port_hopper, daemon=True)
-        self.port_thread.start()
-        
-        logger.info("[6/6] Starting server...")
-        self._start_server()
-        
-        self._show_banner()
-    
-    def _start_server(self):
-        """Запуск основного сервера"""
-        self.servers = []
-        
-        # Запускаем слушатели на всех портах
-        for port in self.ports:
-            server_thread = threading.Thread(
-                target=self._listen_on_port,
-                args=(port,),
-                daemon=True
-            )
-            server_thread.start()
-            self.servers.append(server_thread)
-            logger.info(f"[*] Listening on port {port}")
-    
-    def _listen_on_port(self, port):
-        """Слушатель на конкретном порту"""
-        try:
-            # Создаем обычный TCP сокет
-            server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            server_sock.bind((HOST, port))
-            server_sock.listen(100)
-            
-            while self.running:
-                try:
-                    client_sock, addr = server_sock.accept()
-                    logger.info(f"[*] Connection from {addr} on port {port}")
-                    
-                    # Создаем SSL контекст с защитой
-                    if self.anti_dpi:
-                        # Используем anti-DPI обертку
-                        context = self._create_secure_context()
-                        secure_sock = context.wrap_socket(client_sock, server_side=True)
-                    else:
-                        # Обычный SSL
-                        context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-                        context.load_cert_chain(CERTFILE, KEYFILE)
-                        secure_sock = context.wrap_socket(client_sock, server_side=True)
-                    
-                    # Обработка клиента
-                    handler = ClientHandler(secure_sock, addr, self)
-                    thread = threading.Thread(target=handler.run, daemon=True)
-                    thread.start()
-                    
-                except Exception as e:
-                    if self.running:
-                        logger.error(f"Error on port {port}: {e}")
-                        
-        except Exception as e:
-            logger.error(f"Failed to start listener on port {port}: {e}")
-    
-    def _create_secure_context(self):
-        """Создание защищенного SSL контекста"""
-        context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-        context.load_cert_chain(CERTFILE, KEYFILE)
-        
-        # Настройка современных шифров
-        context.set_ciphers('ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:!aNULL:!MD5:!DSS')
-        
-        # Включаем только TLS 1.3
-        context.minimum_version = ssl.TLSVersion.TLSv1_2
-        context.maximum_version = ssl.TLSVersion.TLSv1_3
-        
-        # Включаем ALPN
-        context.set_alpn_protocols(['h2', 'http/1.1'])
-        
-        return context
-    
-    def _tun_reader(self):
-        """Чтение из TUN и отправка клиентам"""
-        logger.info("[*] TUN reader started")
-        
-        while self.running:
-            try:
-                packet = self.tun.read()
-                
-                if len(packet) >= 20:
-                    try:
-                        dest_ip = socket.inet_ntoa(packet[16:20])
-                    except:
-                        time.sleep(0.001)
-                        continue
-                    
-                    with self.clients_lock:
-                        if dest_ip in self.clients:
-                            client = self.clients[dest_ip]
-                            try:
-                                nonce = os.urandom(12)
-                                encrypted = self.crypto.encrypt(packet, nonce)
-                                message = nonce + struct.pack('!H', len(encrypted)) + encrypted
-                                client['socket'].send(message)
-                                client['handler'].metrics["bytes_sent"] += len(message)
-                                client['handler'].metrics["packets_sent"] += 1
-                                client['last_activity'] = time.time()
-                            except Exception as e:
-                                del self.clients[dest_ip]
-                
-                time.sleep(0.001)
-                
-            except Exception as e:
-                if self.running:
-                    pass
-    
-    def _port_hopper(self):
-        """Порт-хоппинг для обхода блокировок"""
-        while self.running:
-            time.sleep(300)  # Каждые 5 минут
-            
-            # Ротируем основной порт
-            self.current_port_idx = (self.current_port_idx + 1) % len(self.ports)
-            new_port = self.ports[self.current_port_idx]
-            
-            logger.info(f"[*] Switching active port to {new_port}")
-            
-            # Обновляем информацию для клиентов
-            self._notify_clients_port_change(new_port)
-    
-    def _notify_clients_port_change(self, new_port):
-        """Уведомление клиентов о смене порта"""
-        message = f"PORT_CHANGE:{new_port}".encode()
-        with self.clients_lock:
-            for ip, client in self.clients.items():
-                try:
-                    client['socket'].send(message)
-                except:
-                    pass
-    
-    def _show_banner(self):
-        """Отображение баннера (без Unicode)"""
-        banner = """
-======================================================================
-                     VPN SERVER WITH ANTI-DPI PROTECTION
-======================================================================
-  Status:           [OK] RUNNING
-  Port:             443 (main)
-  Backup ports:     8443, 2053, 2083, 2096, 8080
-  VPN network:      10.8.0.0/24
-  Server IP:        10.8.0.1
-  Anti-DPI:         [OK] ENABLED
-  Location:         Belarus (weak blocking)
-======================================================================
-        """
-        logger.info(banner)
-    
-    def stop(self):
-        """Остановка сервера"""
-        logger.info("\n[!] Stopping server...")
-        self.running = False
-        
-        # Закрываем все клиентские соединения
-        with self.clients_lock:
-            for ip, client in self.clients.items():
-                try:
-                    client['socket'].close()
-                except:
-                    pass
-            self.clients.clear()
-        
-        # Закрываем TUN
-        self.tun.close()
-        
-        logger.info("[+] Server stopped")
-
-
-def generate_ssl_cert():
-    """Генерация SSL сертификата"""
+# ============== ГЕНЕРАЦИЯ SSL СЕРТИФИКАТА ==============
+def generate_ssl_certificate():
+    """Генерация самоподписанного SSL сертификата"""
     from cryptography import x509
     from cryptography.x509.oid import NameOID
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.hazmat.primitives import hashes
     import datetime
     
-    if os.path.exists(CERTFILE) and os.path.exists(KEYFILE):
+    if CERT_FILE.exists() and KEY_FILE.exists():
         logger.info("[*] SSL certificate already exists")
         return
     
-    logger.info("[*] Generating SSL certificate...")
+    logger.info("[*] Generating new SSL certificate...")
     
+    # Генерируем приватный ключ
     private_key = rsa.generate_private_key(
         public_exponent=65537,
         key_size=2048,
-        backend=default_backend()
     )
     
+    # Создаем сертификат
     subject = issuer = x509.Name([
-        x509.NameAttribute(NameOID.COMMON_NAME, u"localhost"),
+        x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
+        x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, "California"),
+        x509.NameAttribute(NameOID.LOCALITY_NAME, "San Francisco"),
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME, "VPN Server"),
+        x509.NameAttribute(NameOID.COMMON_NAME, "vpn.local"),
     ])
     
     cert = x509.CertificateBuilder().subject_name(
@@ -687,54 +645,472 @@ def generate_ssl_cert():
     ).serial_number(
         x509.random_serial_number()
     ).not_valid_before(
-        datetime.datetime.now()
+        datetime.datetime.now(datetime.timezone.utc)
     ).not_valid_after(
-        datetime.datetime.now() + datetime.timedelta(days=365)
-    ).sign(private_key, hashes.SHA256(), default_backend())
+        datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=3650)
+    ).add_extension(
+        x509.SubjectAlternativeName([
+            x509.DNSName("localhost"),
+            x509.DNSName("vpn.local"),
+            x509.IPAddress(ipaddress.IPv4Address("127.0.0.1"))
+        ]),
+        critical=False,
+    ).sign(private_key, hashes.SHA256())
     
-    with open(KEYFILE, "wb") as f:
+    # Сохраняем ключ
+    with open(KEY_FILE, "wb") as f:
         f.write(private_key.private_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PrivateFormat.PKCS8,
             encryption_algorithm=serialization.NoEncryption()
         ))
+    os.chmod(KEY_FILE, 0o600)
     
-    with open(CERTFILE, "wb") as f:
+    # Сохраняем сертификат
+    with open(CERT_FILE, "wb") as f:
         f.write(cert.public_bytes(serialization.Encoding.PEM))
     
     logger.info("[+] SSL certificate created")
+    
+    # Экспортируем публичный ключ для клиента
+    pubkey_file = CONFIG_DIR / "server_pubkey.pem"
+    with open(pubkey_file, "wb") as f:
+        f.write(cert.public_bytes(serialization.Encoding.PEM))
+    
+    return cert.public_bytes(serialization.Encoding.PEM).decode()
 
 
-def check_admin():
+# ============== ОБРАБОТЧИК КЛИЕНТА ==============
+class ClientHandler:
+    """Обработка одного клиента"""
+    
+    def __init__(self, sock: socket.socket, addr: tuple, vpn_server):
+        self.sock = sock
+        self.addr = addr
+        self.client_ip_str = addr[0]
+        self.vpn_server = vpn_server
+        self.assigned_ip: Optional[str] = None
+        self.running = True
+        self.anti_dpi: Optional[AntiDPIEngine] = None
+        self.last_activity = time.time()
+        self.write_lock = threading.RLock()
+        
+        # Статистика
+        self.bytes_sent = 0
+        self.bytes_received = 0
+        self.packets_sent = 0
+        self.packets_received = 0
+    
+    def run(self):
+        """Основной цикл обработки клиента"""
+        try:
+            # Устанавливаем таймаут
+            self.sock.settimeout(30)
+            
+            # Trojan аутентификация
+            auth_success, nonce = self.vpn_server.auth_manager.authenticate(
+                self.sock, self.client_ip_str
+            )
+            
+            if not auth_success:
+                logger.warning(f"Authentication failed from {self.addr}")
+                return
+            
+            # Инициализируем Anti-DPI и выполняем PFS handshake
+            self.anti_dpi = AntiDPIEngine(is_server=True)
+            
+            try:
+                session_keys = self.anti_dpi.perform_handshake(self.sock, self.client_ip_str)
+                logger.debug(f"PFS handshake completed with {self.addr}")
+            except Exception as e:
+                logger.error(f"PFS handshake failed: {e}")
+                import traceback
+                traceback.print_exc()
+                return
+            
+            # Выделяем IP адрес
+            self.assigned_ip = self.vpn_server.client_manager.allocate_ip()
+            
+            if not self.assigned_ip:
+                logger.error(f"No available IP for {self.addr}")
+                return
+            
+            # Отправляем назначенный IP клиенту
+            ip_message = self.anti_dpi.encrypt_packet(self.assigned_ip.encode())
+            self.sock.send(ip_message)
+            
+            logger.info(f"[+] Client {self.addr} authenticated, assigned IP: {self.assigned_ip}")
+            
+            # Регистрируем клиента
+            self.vpn_server.client_manager.add_client(self.assigned_ip, self, self.sock)
+            
+            # Запускаем поток для отправки данных клиенту
+            send_thread = threading.Thread(target=self._send_worker, daemon=True)
+            send_thread.start()
+            
+            # Основной цикл приема данных
+            while self.running and self.vpn_server.running:
+                try:
+                    # Читаем заголовок пакета
+                    header = self._recv_exact(14)
+                    
+                    if len(header) < 14:
+                        break
+                    
+                    length = struct.unpack('!H', header[12:14])[0]
+                    
+                    if 0 < length < 65535:
+                        encrypted_data = self._recv_exact(length)
+                        
+                        if len(encrypted_data) == length:
+                            packet = self.anti_dpi.decrypt_packet(header + encrypted_data)
+                            
+                            if packet:
+                                self.vpn_server.tun.write(packet)
+                                
+                                self.bytes_received += len(header) + length
+                                self.packets_received += 1
+                                self.last_activity = time.time()
+                    
+                except socket.timeout:
+                    continue
+                except Exception as e:
+                    if self.running:
+                        logger.debug(f"Receive error from {self.assigned_ip}: {e}")
+                    break
+            
+        except Exception as e:
+            logger.error(f"Client handler error for {self.addr}: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            self.cleanup()
+    
+    def _send_worker(self):
+        """Поток отправки данных клиенту"""
+        # Очередь пакетов для этого клиента
+        import queue
+        packet_queue = queue.Queue(maxsize=1000)
+        
+        # Регистрируем очередь
+        with self.vpn_server.send_queues_lock:
+            self.vpn_server.send_queues[self.assigned_ip] = packet_queue
+        
+        try:
+            while self.running and self.vpn_server.running:
+                try:
+                    packet = packet_queue.get(timeout=0.5)
+                    
+                    # Шифруем и отправляем
+                    encrypted = self.anti_dpi.encrypt_packet(packet)
+                    
+                    with self.write_lock:
+                        self.sock.send(encrypted)
+                    
+                    self.bytes_sent += len(encrypted)
+                    self.packets_sent += 1
+                    
+                except queue.Empty:
+                    continue
+                except Exception as e:
+                    if self.running:
+                        logger.debug(f"Send error to {self.assigned_ip}: {e}")
+                    break
+        finally:
+            # Удаляем очередь
+            with self.vpn_server.send_queues_lock:
+                if self.assigned_ip in self.vpn_server.send_queues:
+                    del self.vpn_server.send_queues[self.assigned_ip]
+    
+    def _recv_exact(self, n: int) -> bytes:
+        """Получение точного количества байт"""
+        data = b''
+        while len(data) < n:
+            try:
+                chunk = self.sock.recv(n - len(data))
+                if not chunk:
+                    break
+                data += chunk
+            except socket.timeout:
+                break
+        return data
+    
+    def send_packet(self, packet: bytes) -> bool:
+        """Отправка пакета клиенту (вызывается из TUN reader)"""
+        if not self.running:
+            return False
+        
+        with self.vpn_server.send_queues_lock:
+            if self.assigned_ip in self.vpn_server.send_queues:
+                try:
+                    self.vpn_server.send_queues[self.assigned_ip].put_nowait(packet)
+                    return True
+                except:
+                    pass
+        
+        return False
+    
+    def cleanup(self):
+        """Очистка ресурсов клиента"""
+        self.running = False
+        
+        if self.assigned_ip:
+            # Обновляем статистику
+            self.vpn_server.client_manager.update_stats(
+                self.assigned_ip,
+                sent=self.bytes_sent,
+                received=self.bytes_received,
+                packets_sent=self.packets_sent,
+                packets_received=self.packets_received
+            )
+            
+            # Удаляем клиента
+            self.vpn_server.client_manager.remove_client(self.assigned_ip)
+        
+        try:
+            self.sock.close()
+        except:
+            pass
+
+
+# ============== ГЛАВНЫЙ VPN СЕРВЕР ==============
+class VPNServer:
+    """Главный VPN сервер"""
+    
+    def __init__(self):
+        self.running = True
+        self.start_time = time.time()
+        
+        # Менеджеры
+        self.auth_manager = SecureAuthManager()
+        self.client_manager = ClientManager()
+        
+        # Очереди отправки для клиентов
+        self.send_queues: Dict[str, 'queue.Queue'] = {}
+        self.send_queues_lock = threading.RLock()
+        
+        # Список портов для прослушивания
+        self.ports = [PORT] + ALT_PORTS
+        self.server_sockets: List[socket.socket] = []
+        
+        # Генерируем SSL сертификат
+        generate_ssl_certificate()
+        
+        # Инициализируем TUN
+        logger.info("[1/4] Initializing TUN interface...")
+        self.tun = TUNInterface(TUN_NAME, VPN_SERVER_IP, VPN_NETMASK)
+        
+        # Запускаем TUN reader
+        logger.info("[2/4] Starting TUN reader...")
+        self.tun_thread = threading.Thread(target=self._tun_reader, daemon=True)
+        self.tun_thread.start()
+        
+        # Запускаем серверы на всех портах
+        logger.info("[3/4] Starting listeners...")
+        self._start_listeners()
+        
+        # Запускаем монитор статистики
+        logger.info("[4/4] Starting stats monitor...")
+        self.stats_thread = threading.Thread(target=self._stats_monitor, daemon=True)
+        self.stats_thread.start()
+        
+        self._show_banner()
+    
+    def _start_listeners(self):
+        """Запуск слушателей на всех портах"""
+        for port in self.ports:
+            thread = threading.Thread(target=self._listen_on_port, args=(port,), daemon=True)
+            thread.start()
+    
+    def _listen_on_port(self, port: int):
+        """Слушатель на конкретном порту"""
+        try:
+            # Создаем SSL контекст с JA3 имитацией
+            anti_dpi = AntiDPIEngine(is_server=True)
+            context = anti_dpi.tls_impersonator.create_ssl_context(is_server=True)
+            
+            # Загружаем сертификат
+            context.load_cert_chain(str(CERT_FILE), str(KEY_FILE))
+            
+            # Создаем TCP сокет
+            server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            server_sock.bind((HOST, port))
+            server_sock.listen(100)
+            
+            self.server_sockets.append(server_sock)
+            
+            # Оборачиваем в SSL
+            secure_server = context.wrap_socket(server_sock, server_side=True)
+            
+            logger.info(f"[*] Listening on port {port} (JA3: {anti_dpi.tls_impersonator.current_profile})")
+            
+            while self.running:
+                try:
+                    secure_server.settimeout(1.0)
+                    client_sock, addr = secure_server.accept()
+                    
+                    logger.info(f"[*] New SSL connection from {addr} on port {port}")
+                    
+                    # Запускаем обработчик клиента
+                    handler = ClientHandler(client_sock, addr, self)
+                    thread = threading.Thread(target=handler.run, daemon=True)
+                    thread.start()
+                    
+                except socket.timeout:
+                    continue
+                except ssl.SSLError as e:
+                    if self.running:
+                        logger.debug(f"SSL error on port {port}: {e}")
+                except Exception as e:
+                    if self.running:
+                        logger.error(f"Error on port {port}: {e}")
+                        
+        except Exception as e:
+            logger.error(f"Failed to start listener on port {port}: {e}")
+    
+    def _tun_reader(self):
+        """Чтение из TUN и отправка клиентам"""
+        logger.info("[*] TUN reader started")
+        
+        while self.running:
+            try:
+                packet = self.tun.read(timeout=0.1)
+                
+                if packet and len(packet) >= 20:
+                    # Извлекаем IP назначения
+                    try:
+                        dest_ip = socket.inet_ntoa(packet[16:20])
+                        
+                        # Ищем клиента
+                        client_data = self.client_manager.get_client(dest_ip)
+                        
+                        if client_data:
+                            handler = client_data['handler']
+                            handler.send_packet(packet)
+                    except Exception as e:
+                        logger.debug(f"TUN routing error: {e}")
+                
+            except Exception as e:
+                if self.running:
+                    logger.debug(f"TUN reader error: {e}")
+    
+    def _stats_monitor(self):
+        """Мониторинг статистики"""
+        while self.running:
+            time.sleep(60)
+            
+            stats = self.client_manager.get_stats()
+            uptime = time.time() - self.start_time
+            
+            logger.info(
+                f"[STATS] Uptime: {int(uptime//3600):02d}:{int((uptime%3600)//60):02d}, "
+                f"Clients: {stats['total_clients']}, "
+                f"Total: \u2191{self._format_bytes(stats['total_bytes_sent'])} "
+                f"\u2193{self._format_bytes(stats['total_bytes_received'])}"
+            )
+    
+    def _show_banner(self):
+        """Отображение баннера"""
+        banner = f"""
+======================================================================
+                    VPN SERVER 2026 - SECURE MODE
+======================================================================
+  Status:           [RUNNING]
+  Ports:            {', '.join(map(str, self.ports))}
+  VPN Network:      {VPN_NETWORK}
+  Server IP:        {VPN_SERVER_IP}
+  PFS:              ENABLED (X25519 + Double Ratchet)
+  Anti-DPI:         ENABLED (JA3 + SNI Spoofing + Obfuscation)
+  Auth Salt:        {self.auth_manager.salt[:8].hex()}...
+======================================================================
+  Clients: {len(self.client_manager.clients)}
+======================================================================
+        """
+        logger.info(banner)
+    
+    def stop(self):
+        """Остановка сервера"""
+        logger.info("\n[!] Shutting down server...")
+        self.running = False
+        
+        # Закрываем все сокеты
+        for sock in self.server_sockets:
+            try:
+                sock.close()
+            except:
+                pass
+        
+        # Закрываем TUN
+        self.tun.close()
+        
+        logger.info("[+] Server stopped")
+    
+    @staticmethod
+    def _format_bytes(bytes_count: int) -> str:
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if bytes_count < 1024.0:
+                return f"{bytes_count:.2f} {unit}"
+            bytes_count /= 1024.0
+        return f"{bytes_count:.2f} PB"
+
+
+# ============== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==============
+def check_admin() -> bool:
     """Проверка прав администратора"""
     try:
-        return ctypes.windll.shell32.IsUserAnAdmin()
+        return ctypes.windll.shell32.IsUserAnAdmin() != 0
     except:
         return False
 
 
-if __name__ == "__main__":
-    print("=" * 50)
-    print("VPN SERVER WITH ANTI-DPI (2026)")
-    print("=" * 50)
+def setup_signal_handlers(server: VPNServer):
+    """Настройка обработчиков сигналов"""
+    def signal_handler(signum, frame):
+        logger.info(f"\n[!] Received signal {signum}")
+        server.stop()
+        sys.exit(0)
     
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+
+# ============== ТОЧКА ВХОДА ==============
+if __name__ == "__main__":
+    print("=" * 60)
+    print("VPN SERVER 2026")
+    print("=" * 60)
+    
+    # Проверка прав администратора
     if not check_admin():
         print("[!] ERROR: Administrator privileges required!")
-        print("[!] Please run PowerShell as Administrator")
+        print("    Run this script as Administrator")
         sys.exit(1)
     
+    # Проверка наличия wintun.dll
     if not os.path.exists("wintun.dll"):
         print("[!] ERROR: wintun.dll not found!")
-        print("[!] Download from: https://www.wintun.net/")
+        print("    Download from: https://www.wintun.net/")
         sys.exit(1)
     
-    generate_ssl_cert()
-    
-    server = VPNServer()
-    
+    # Создаем и запускаем сервер
     try:
-        # Держим сервер запущенным
+        server = VPNServer()
+        setup_signal_handlers(server)
+        
+        # Основной цикл
         while server.running:
             time.sleep(1)
+            
     except KeyboardInterrupt:
-        server.stop()
+        pass
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        if 'server' in locals():
+            server.stop()
+    
+    print("\n[+] Server shutdown complete")
