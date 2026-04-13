@@ -1,6 +1,7 @@
 import sys
 import os
 import json
+
 from PySide6.QtWidgets import QApplication, QWidget, QPushButton, QLabel, QLineEdit, QMenu, QVBoxLayout
 from PySide6.QtGui import QFont, QPainter, QColor, QAction, QPen, Qt
 from PySide6.QtCore import QPropertyAnimation, QEasingCurve, QRectF, Property, Signal, QPoint
@@ -134,7 +135,6 @@ class MainWindow(QWidget):
 
         self.load_settings()
         self.overlay = OverlayDialog(self)
-
 
     def load_settings(self):
         if os.path.exists(self.settings_file):
@@ -317,6 +317,9 @@ class OverlayDialog(QWidget):
         super().__init__(parent_main_window)
 
         self.main_window = parent_main_window
+        self._is_hiding = False
+
+        self._position = 1.0
 
         self.setVisible(False)
         self.setStyleSheet("""background-color: #26252d;""")
@@ -324,8 +327,6 @@ class OverlayDialog(QWidget):
         self.animation = QPropertyAnimation(self, b"position")
         self.animation.setDuration(300)
         self.animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
-
-        self._position = 1.0
 
         self.container = QWidget(self)
         self.container.setStyleSheet("""
@@ -336,7 +337,12 @@ class OverlayDialog(QWidget):
         """)
         self.container.setFixedWidth(280)
 
-    @property
+        self.container_layout = QVBoxLayout()
+        self.container.setLayout(self.container_layout)
+
+        self.animation.finished.connect(self.on_hide_finished)
+
+    @Property(float)
     def position(self):
         return self._position
 
@@ -363,44 +369,54 @@ class OverlayDialog(QWidget):
 
         self.container.move(x, y)
 
-
     def show_with_content(self, content_widget):
         self.animation.stop()
+        self.clear_container()
 
-        self.setVisible(False)
-
-        for widget in self.container.findChildren(QWidget):
-            widget.deleteLater()
-
-        if not self.container.layout():
-            self.container.setLayout(QVBoxLayout())
-        self.container.layout().addWidget(content_widget)
+        self.container_layout.addWidget(content_widget)
 
         self.container.updateGeometry()
-        self.container.layout().activate()
+        self.container_layout.activate()
 
         self._position = 1.0
         self.updateContainerPosition()
+        self.setVisible(True)
 
         self.main_window.button4.setVisible(False)
-        self.setVisible(True)
 
         self.animation.setStartValue(1.0)
         self.animation.setEndValue(0.0)
         self.animation.start()
 
     def hide_overlay(self):
-        self.animation.stop()
-        self.setVisible(False)
-        self.main_window.button4.setVisible(True)
-
-        self._position = 1.0
-        self.updateContainerPosition()
-
+        self._is_hiding = True
+        self.animation.setStartValue(0.0)
+        self.animation.setEndValue(1.0)
+        self.animation.start()
 
     def resizeEvent(self, event):
         self.setGeometry(self.main_window.rect())
         super().resizeEvent(event)
+        self.updateContainerPosition()
+
+
+    def on_hide_finished(self):
+        if self._is_hiding:
+            self.clear_container()
+            self.setVisible(False)
+            self.main_window.button4.setVisible(True)
+            self._is_hiding = False
+            self._position = 1.0
+            self.updateContainerPosition()
+
+    def clear_container(self):
+        if not self.container_layout:
+            return
+        while self.container_layout.count():
+            item = self.container_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
