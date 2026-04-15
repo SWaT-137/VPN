@@ -21,7 +21,6 @@ from datetime import datetime
 from typing import Optional, Dict, Tuple
 from pathlib import Path
 
-# Импорт модулей
 from anti_dpi_engine import AntiDPIEngine
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
@@ -35,7 +34,6 @@ CONFIG_DIR = Path("vpn_client_config")
 PASSWORD_FILE = CONFIG_DIR / "client_password.txt"
 SERVER_CERT_PIN_FILE = CONFIG_DIR / "server_cert_pin.txt"
 
-# Настройка логирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -77,8 +75,7 @@ class CredentialManager:
             confirm = input("Confirm password: ")
             if pwd == confirm and len(pwd) >= 8:
                 return pwd
-            else:
-                print("[!] Passwords don't match or too short (min 8 chars). Try again.")
+            print("[!] Passwords don't match or too short (min 8 chars). Try again.")
 
     def verify_certificate(self, cert_der: bytes) -> bool:
         try:
@@ -89,14 +86,12 @@ class CredentialManager:
                 if cert_hash == self.server_cert_pin:
                     logger.info("[+] Certificate pin verified")
                     return True
-                else:
-                    logger.error("[!] Certificate pin mismatch!")
-                    return False
-            else:
-                logger.warning("[!] No certificate pin configured (first connection)")
-                self.set_certificate_pin_by_hash(cert_hash)
-                logger.info(f"[+] Certificate pin saved: {cert_hash[:16]}...")
-                return True
+                logger.error("[!] Certificate pin mismatch!")
+                return False
+            logger.warning("[!] No certificate pin configured (first connection)")
+            self.set_certificate_pin_by_hash(cert_hash)
+            logger.info(f"[+] Certificate pin saved: {cert_hash[:16]}...")
+            return True
         except Exception as e:
             logger.error(f"[!] Certificate verification error: {e}")
             return False
@@ -115,17 +110,12 @@ class WintunWrapper:
             os.path.join(os.getcwd(), dll_path),
             dll_path
         ]
-        found_path = None
-        for path in search_paths:
-            if os.path.exists(path):
-                found_path = path
-                break
+        found_path = next((p for p in search_paths if os.path.exists(p)), None)
         if not found_path:
-            raise FileNotFoundError(f"wintun.dll not found")
+            raise FileNotFoundError("wintun.dll not found")
         logger.info(f"Loading wintun.dll from: {found_path}")
         self.dll = ctypes.WinDLL(found_path)
         
-        # Обязательные функции
         self.WintunCreateAdapter = self.dll.WintunCreateAdapter
         self.WintunCreateAdapter.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_wchar_p]
         self.WintunCreateAdapter.restype = ctypes.c_void_p
@@ -166,33 +156,33 @@ class WintunWrapper:
         self.WintunSendPacket.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
         self.WintunSendPacket.restype = None
         
-        # Опциональные функции (с безопасной загрузкой)
+        # Опциональные функции с безопасной загрузкой
         try:
             self.WintunFreeAdapter = self.dll.WintunFreeAdapter
             self.WintunFreeAdapter.argtypes = [ctypes.c_void_p]
             self.WintunFreeAdapter.restype = None
         except AttributeError:
-            logger.warning("[*] WintunFreeAdapter not available in this DLL version")
+            logger.warning("[*] WintunFreeAdapter not available")
             self.WintunFreeAdapter = None
-        
+            
         try:
             self.WintunDeleteAdapter = self.dll.WintunDeleteAdapter
             self.WintunDeleteAdapter.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.POINTER(ctypes.c_wchar_p)]
             self.WintunDeleteAdapter.restype = ctypes.c_bool
         except AttributeError:
-            logger.warning("[*] WintunDeleteAdapter not available in this DLL version")
+            logger.warning("[*] WintunDeleteAdapter not available")
             self.WintunDeleteAdapter = None
 
     def create_adapter(self, name: str) -> ctypes.c_void_p:
         handle = self.WintunCreateAdapter(name, "VPN", None)
         if not handle:
-            raise RuntimeError(f"Failed to create Wintun adapter: {ctypes.GetLastError()}")
+            raise RuntimeError(f"Failed to create adapter: {ctypes.GetLastError()}")
         return handle
 
     def open_adapter(self, name: str) -> ctypes.c_void_p:
         handle = self.WintunOpenAdapter(name)
         if not handle:
-            raise RuntimeError(f"Failed to open Wintun adapter: {ctypes.GetLastError()}")
+            raise RuntimeError(f"Failed to open adapter: {ctypes.GetLastError()}")
         return handle
 
     def start_session(self, handle: ctypes.c_void_p, capacity: int) -> ctypes.c_void_p:
@@ -224,18 +214,18 @@ class TunInterface:
             self.adapter_handle = self.wintun.create_adapter(self.name)
             logger.info(f"[+] Virtual adapter '{self.name}' created")
         except Exception:
-            logger.info(f"[-] Adapter might exist, trying to open...")
+            logger.info("[-] Adapter might exist, trying to open...")
             self.adapter_handle = self.wintun.open_adapter(self.name)
             logger.info(f"[+] Virtual adapter '{self.name}' opened")
         
-        logger.info(f"[2/3] Starting TUN session...")
+        logger.info("[2/3] Starting TUN session...")
         self.session_handle = self.wintun.start_session(self.adapter_handle, 0x400000)
         self.read_event = self.wintun.WintunGetReadWaitEvent(self.session_handle)
         self.running = True
-        logger.info(f"[+] TUN session started")
+        logger.info("[+] TUN session started")
 
     def set_ip(self, ip: str):
-        logger.info(f"[3/3] Configuring IP address...")
+        logger.info("[3/3] Configuring IP address...")
         try:
             import subprocess
             subprocess.run(f'netsh interface ipv4 delete address "{self.name}"', shell=True, capture_output=True)
@@ -256,39 +246,38 @@ class TunInterface:
                 data = ctypes.string_at(packet_ptr, packet_size.value)
                 self.wintun.WintunReleaseReceivePacket(self.session_handle, packet_ptr)
                 return data
-            elif result == 232:
-                wait_result = ctypes.windll.kernel32.WaitForSingleObject(self.read_event, int(timeout * 1000))
-                if wait_result == 0:
+            if result == 232:
+                wait = ctypes.windll.kernel32.WaitForSingleObject(self.read_event, int(timeout * 1000))
+                if wait == 0:
                     result = self.wintun.WintunReceivePacket(self.session_handle, ctypes.byref(packet_ptr), ctypes.byref(packet_size))
                     if result == 0 and packet_ptr and packet_ptr.value and packet_size.value > 0:
                         data = ctypes.string_at(packet_ptr, packet_size.value)
                         self.wintun.WintunReleaseReceivePacket(self.session_handle, packet_ptr)
                         return data
-            return None
         except Exception:
-            return None
+            pass
+        return None
 
     def write(self, packet: bytes) -> bool:
         if not self.session_handle or not self.running or not packet:
             return False
         try:
-            packet_ptr = self.wintun.WintunAllocateSendPacket(self.session_handle, len(packet))
-            if packet_ptr and packet_ptr != 0:
-                ctypes.memmove(packet_ptr, packet, len(packet))
-                self.wintun.WintunSendPacket(self.session_handle, packet_ptr)
+            ptr = self.wintun.WintunAllocateSendPacket(self.session_handle, len(packet))
+            if ptr and ptr != 0:
+                ctypes.memmove(ptr, packet, len(packet))
+                self.wintun.WintunSendPacket(self.session_handle, ptr)
                 return True
-            return False
         except Exception:
-            return False
+            pass
+        return False
 
     def close(self):
         self.running = False
         if self.session_handle:
             self.wintun.WintunEndSession(self.session_handle)
         if self.adapter_handle:
-            self.wintun.WintunCloseAdapter(self.adapter_handle)
-            if self.wintun.WintunFreeAdapter:
-                self.wintun.WintunFreeAdapter(self.adapter_handle)
+            self.wintun.close_adapter(self.adapter_handle)
+            self.wintun.free_adapter(self.adapter_handle)
         try:
             import subprocess
             subprocess.run(f'netsh interface ipv4 delete route 10.8.0.0/24 "{self.name}"', shell=True, capture_output=True)
@@ -296,7 +285,7 @@ class TunInterface:
         except Exception:
             pass
 
-# ============== ОСНОВНОЙ КЛИЕНТ ==============
+# ============== КЛИЕНТ ==============
 class VPNClient:
     def __init__(self, host: str = SERVER_HOST, port: int = SERVER_PORT):
         self.host = host
@@ -320,21 +309,19 @@ class VPNClient:
             
             self.anti_dpi = AntiDPIEngine(is_server=False)
             self.sock = self.anti_dpi.wrap_socket(raw_sock, verify_cert=False)
-            # Сбрасываем таймаут после wrap_socket
-            self.sock.settimeout(None)
+            # Сбрасываем наследуемый таймаут
+            self.sock.settimeout(30.0)
             
             logger.info("SSL connection established, checking certificate pin...")
             cert_der = self.sock.getpeercert(binary_form=True)
             if not self.cred_manager.verify_certificate(cert_der):
-                logger.error("[!] Certificate pin verification failed!")
                 raise ssl.SSLError("Certificate pin mismatch")
-            logger.info("[+] Certificate pin verified")
             
             password = self.cred_manager.password
             password_hash = hashlib.sha224(password.encode()).hexdigest()
             client_nonce = secrets.token_bytes(6)
             auth_data = password_hash.encode() + client_nonce + b'\r\n'
-            self.sock.send(auth_data)
+            self.sock.sendall(auth_data)
             logger.info("[+] Authentication sent")
             
             logger.info("[+] Performing PFS handshake...")
@@ -342,20 +329,18 @@ class VPNClient:
             logger.info("[+] PFS handshake completed")
             
             logger.info("[+] Waiting for IP assignment...")
-            header = self._recv_exact(14)
+            header = self._recv_exact(self.sock, 14)
             if len(header) < 14:
                 raise ConnectionError("Failed to receive IP header")
             length = struct.unpack('!H', header[12:14])[0]
             encrypted_data = self._recv_exact(length)
-            if len(encrypted_data) == length:
-                decrypted_ip = self.anti_dpi.decrypt_packet(header + encrypted_data)
-                if decrypted_ip:
-                    self.assigned_ip = decrypted_ip.decode()
-                    logger.info(f"[+] Assigned IP: {self.assigned_ip}")
-                else:
-                    raise ConnectionError("Failed to decrypt assigned IP")
-            else:
-                raise ConnectionError("Failed to receive complete IP packet")
+            if len(encrypted_data) != length:
+                raise ConnectionError("Failed to receive IP packet")
+            decrypted_ip = self.anti_dpi.decrypt_packet(header + encrypted_data)
+            if not decrypted_ip:
+                raise ConnectionError("Failed to decrypt IP")
+            self.assigned_ip = decrypted_ip.decode()
+            logger.info(f"[+] Assigned IP: {self.assigned_ip}")
             
             self.tun = TunInterface()
             self.tun.create()
@@ -378,10 +363,8 @@ class VPNClient:
         logger.info("Disconnecting...")
         self.running = False
         if self.sock:
-            try:
-                self.sock.close()
-            except:
-                pass
+            try: self.sock.close()
+            except: pass
         if self.tun:
             self.tun.close()
         logger.info("Disconnected")
@@ -392,37 +375,22 @@ class VPNClient:
             if packet:
                 try:
                     encrypted = self.anti_dpi.encrypt_packet(packet)
-                    self.sock.send(encrypted)
+                    self.sock.sendall(encrypted)
                     with self.stats_lock:
                         self.stats['bytes_sent'] += len(encrypted)
                         self.stats['packets_sent'] += 1
                 except Exception:
-                    if self.running:
-                        break
+                    if self.running: break
 
     def _network_reader_loop(self):
         while self.running:
             try:
-                header = self._recv_exact(14)
+                header = self._recv_exact(self.sock, 14)
                 if len(header) == 0:
-                    logger.warning("[!] Server closed connection")
+                    logger.warning("[!] Server closed connection (EOF)")
                     break
                 if len(header) < 14:
-                    try:
-                        self.sock.setblocking(False)
-                        peek = self.sock.recv(1, socket.MSG_PEEK)
-                        self.sock.setblocking(True)
-                        if peek == b'':
-                            logger.warning("[!] Connection closed by server")
-                            break
-                        continue
-                    except (BlockingIOError, socket.timeout):
-                        self.sock.setblocking(True)
-                        continue
-                    except:
-                        self.sock.setblocking(True)
-                        break
-                
+                    continue
                 length = struct.unpack('!H', header[12:14])[0]
                 if 0 < length < 65535:
                     encrypted_data = self._recv_exact(length)
@@ -444,30 +412,35 @@ class VPNClient:
                     logger.error(f"[!] Reader error: {e}")
                     break
 
-    def _recv_exact(self, length: int) -> bytes:
+    def _recv_exact(self, sock: socket.socket, length: int, timeout: float = 30.0) -> bytes:
+        """Безопасное получение байт с обработкой таймаутов"""
         data = b''
-        while len(data) < length:
+        deadline = time.time() + timeout
+        while len(data) < length and time.time() < deadline:
             try:
-                chunk = self.sock.recv(length - len(data))
+                # Динамический таймаут
+                remaining = max(0.1, deadline - time.time())
+                sock.settimeout(remaining)
+                chunk = sock.recv(length - len(data))
                 if not chunk:
-                    return data
+                    break  # EOF
                 data += chunk
             except socket.timeout:
-                return data
-            except (ConnectionResetError, OSError) as e:
-                logger.warning(f"[!] Connection error: {e}")
-                return data
+                continue  # Пробуем ещё раз, если время не вышло
+            except (ConnectionResetError, OSError, ssl.SSLError):
+                break  # Ошибка соединения
+            except Exception:
+                break  # Любая другая ошибка
         return data
 
     def _heartbeat_loop(self):
         while self.running:
-            time.sleep(25)
+            time.sleep(20)
             if self.running and self.sock and self.anti_dpi:
                 try:
-                    heartbeat = self.anti_dpi.encrypt_packet(b'')
-                    self.sock.send(heartbeat)
-                    logger.debug("[♥] Heartbeat sent")
-                except:
+                    hb = self.anti_dpi.encrypt_packet(b'')
+                    self.sock.sendall(hb)
+                except Exception:
                     break
 
     def _stats_monitor(self):
@@ -480,10 +453,8 @@ class VPNClient:
                     logger.info(f"[STATS] Uptime: {int(self.stats['uptime']):02d}s, Tx: {self.stats['bytes_sent']}B, Rx: {self.stats['bytes_received']}B")
 
 def check_admin() -> bool:
-    try:
-        return ctypes.windll.shell32.IsUserAnAdmin() != 0
-    except:
-        return False
+    try: return ctypes.windll.shell32.IsUserAnAdmin() != 0
+    except: return False
 
 def main():
     if not check_admin():
@@ -497,8 +468,7 @@ def main():
     client = VPNClient()
     try:
         if client.connect():
-            while client.running:
-                time.sleep(1)
+            while client.running: time.sleep(1)
         else:
             print("[!] Failed to connect to server")
     except KeyboardInterrupt:

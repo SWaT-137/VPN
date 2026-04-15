@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
 VPN Server 2026 - Production Ready
-Полная интеграция Anti-DPI с PFS и защитой от всех известных атак
 """
 import socket
 import ssl
@@ -23,11 +22,8 @@ from datetime import datetime
 from typing import Optional, Dict, Set, List, Tuple
 from pathlib import Path
 from collections import defaultdict
-
 from anti_dpi_engine import AntiDPIEngine, PerfectForwardSecrecy, SecureNonceManager
 
-# ============== КОНФИГУРАЦИЯ ==============
-# ... (конфигурация без изменений) ...
 HOST = "0.0.0.0"
 PORT = 443
 ALT_PORTS = [8443, 2053, 2083, 2096, 8080, 9443, 4443]
@@ -35,44 +31,28 @@ VPN_NETWORK = "10.8.0.0/24"
 VPN_SERVER_IP = "10.8.0.1"
 VPN_NETMASK = "255.255.255.0"
 TUN_NAME = "VPNServer"
-MTU = 1500
 CONFIG_DIR = Path("vpn_config")
 CONFIG_DIR.mkdir(exist_ok=True)
 PASSWORD_FILE = CONFIG_DIR / "password.hash"
-SALT_FILE = CONFIG_DIR / "salt.bin"
 CERT_FILE = CONFIG_DIR / "server.crt"
 KEY_FILE = CONFIG_DIR / "server.key"
 CLIENTS_FILE = CONFIG_DIR / "clients.json"
 
-# ============== ЛОГИРОВАНИЕ ==============
 class SafeLogger:
     def __init__(self):
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler('vpn_server.log', encoding='utf-8'),
-                logging.StreamHandler(sys.stdout)
-            ]
-        )
+        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s',
+                            handlers=[logging.FileHandler('vpn_server.log', encoding='utf-8'), logging.StreamHandler(sys.stdout)])
         self.logger = logging.getLogger(__name__)
-    
-    def info(self, msg):
-        try: self.logger.info(msg)
-        except UnicodeEncodeError: self.logger.info(msg.encode('ascii', 'ignore').decode('ascii'))
-    def warning(self, msg):
-        try: self.logger.warning(msg)
-        except UnicodeEncodeError: self.logger.warning(msg.encode('ascii', 'ignore').decode('ascii'))
-    def error(self, msg):
-        try: self.logger.error(msg)
-        except UnicodeEncodeError: self.logger.error(msg.encode('ascii', 'ignore').decode('ascii'))
-    def debug(self, msg):
-        try: self.logger.debug(msg)
-        except UnicodeEncodeError: self.logger.debug(msg.encode('ascii', 'ignore').decode('ascii'))
+    def _log(self, level, msg):
+        try: getattr(self.logger, level)(msg)
+        except UnicodeEncodeError: getattr(self.logger, level)(msg.encode('ascii', 'ignore').decode('ascii'))
+    def info(self, msg): self._log('info', msg)
+    def warning(self, msg): self._log('warning', msg)
+    def error(self, msg): self._log('error', msg)
+    def debug(self, msg): self._log('debug', msg)
 
 logger = SafeLogger()
 
-# ============== АУТЕНТИФИКАЦИЯ ==============
 class SecureAuthManager:
     def __init__(self):
         self.password_hash: Optional[str] = None
@@ -94,15 +74,12 @@ class SecureAuthManager:
                         self.salt = bytes.fromhex(data.get('salt', ''))
                         self.plain_password = data.get('plain_password', 'mysecretpassword123')
                         logger.info("[+] Credentials loaded from disk")
-                    else:
-                        raise ValueError("Empty password file")
-            else:
-                raise FileNotFoundError("Password file not found")
-        except (FileNotFoundError, ValueError, json.JSONDecodeError) as e:
+                    else: raise ValueError("Empty file")
+            else: raise FileNotFoundError
+        except Exception as e:
             logger.warning(f"[!] Failed to load credentials: {e}")
             logger.info("[*] Creating new credentials...")
             if PASSWORD_FILE.exists(): PASSWORD_FILE.unlink()
-            if SALT_FILE.exists(): SALT_FILE.unlink()
             password = self._prompt_password()
             self.plain_password = password
             self.salt = secrets.token_bytes(32)
@@ -110,45 +87,33 @@ class SecureAuthManager:
             with open(PASSWORD_FILE, 'w') as f:
                 json.dump({'password_hash': self.password_hash, 'salt': self.salt.hex(), 'plain_password': password}, f)
             os.chmod(PASSWORD_FILE, 0o600)
-            logger.info("[+] New credentials created and saved")
+            logger.info("[+] New credentials created")
 
     def _prompt_password(self) -> str:
         import getpass
-        print("\n" + "=" * 50)
-        print("VPN SERVER INITIAL SETUP")
-        print("=" * 50)
-        password = getpass.getpass("Enter VPN server password (min 8 chars): ")
-        confirm = getpass.getpass("Confirm password: ")
-        if password != confirm:
-            logger.error("Passwords do not match!")
-            sys.exit(1)
-        if len(password) < 8:
-            logger.warning("WARNING: Password is short!")
-        return password
+        print("\n" + "="*50 + "\nVPN SERVER INITIAL SETUP\n" + "="*50)
+        while True:
+            pwd = getpass.getpass("Enter password (min 8 chars): ")
+            if pwd == getpass.getpass("Confirm: ") and len(pwd) >= 8: return pwd
+            print("[!] Mismatch or too short")
 
-    def check_rate_limit(self, client_ip: str) -> bool:
+    def check_rate_limit(self, ip: str) -> bool:
         with self.lock:
             now = time.time()
-            attempts = self.failed_attempts[client_ip]
-            attempts = [t for t in attempts if now - t < 300]
-            self.failed_attempts[client_ip] = attempts
-            if len(attempts) >= 5:
-                logger.warning(f"Rate limit exceeded for {client_ip}")
-                return False
-            return True
+            self.failed_attempts[ip] = [t for t in self.failed_attempts[ip] if now - t < 300]
+            return len(self.failed_attempts[ip]) < 5
 
-    def record_failure(self, client_ip: str):
-        with self.lock:
-            self.failed_attempts[client_ip].append(time.time())
+    def record_failure(self, ip: str):
+        with self.lock: self.failed_attempts[ip].append(time.time())
 
     def authenticate(self, sock: socket.socket, client_ip: str) -> Tuple[bool, Optional[bytes]]:
-        if not self.check_rate_limit(client_ip):
-            return False, None
+        if not self.check_rate_limit(client_ip): return False, None
+        original_timeout = sock.gettimeout()
         try:
             sock.settimeout(10)
             auth_data = self._recv_exact(sock, 64)
             if len(auth_data) < 64:
-                logger.warning(f"Incomplete auth data from {client_ip}: {len(auth_data)} bytes")
+                logger.warning(f"Incomplete auth from {client_ip}")
                 self.record_failure(client_ip)
                 return False, None
             if auth_data[62:64] != b'\r\n':
@@ -158,18 +123,16 @@ class SecureAuthManager:
             received_hash = auth_data[:56].decode('ascii', errors='ignore')
             client_nonce = auth_data[56:62]
             if not self.nonce_manager.is_valid(client_nonce):
-                logger.warning(f"Replay attack detected from {client_ip}")
+                logger.warning(f"Replay attack from {client_ip}")
                 self.record_failure(client_ip)
                 return False, None
-            password_to_use = self.plain_password or "mysecretpassword123"
-            expected_hash = hashlib.sha224(password_to_use.encode()).hexdigest()
-            if received_hash == expected_hash:
-                logger.info(f"[+] Client {client_ip} authenticated successfully")
+            expected = hashlib.sha224((self.plain_password or "mysecretpassword123").encode()).hexdigest()
+            if received_hash == expected:
+                logger.info(f"[+] Client {client_ip} authenticated")
                 return True, client_nonce
-            else:
-                logger.warning(f"[!] Authentication failed for {client_ip}")
-                self.record_failure(client_ip)
-                return False, None
+            logger.warning(f"[!] Auth failed for {client_ip}")
+            self.record_failure(client_ip)
+            return False, None
         except socket.timeout:
             logger.warning(f"Auth timeout from {client_ip}")
             self.record_failure(client_ip)
@@ -178,31 +141,38 @@ class SecureAuthManager:
             logger.error(f"Auth error from {client_ip}: {e}")
             self.record_failure(client_ip)
             return False, None
+        finally:
+            try: sock.settimeout(original_timeout)
+            except: pass
 
-    def _recv_exact(self, sock: socket.socket, n: int) -> bytes:
+    def _recv_exact(self, sock: socket.socket, length: int, timeout: float = 30.0) -> bytes:
+        """Безопасное получение байт с обработкой таймаутов"""
         data = b''
-        while len(data) < n:
+        deadline = time.time() + timeout
+        while len(data) < length and time.time() < deadline:
             try:
-                chunk = sock.recv(n - len(data))
+                # Динамический таймаут
+                remaining = max(0.1, deadline - time.time())
+                sock.settimeout(remaining)
+                chunk = sock.recv(length - len(data))
                 if not chunk:
-                    return data
+                    break  # EOF
                 data += chunk
             except socket.timeout:
-                return data
-            except (ConnectionResetError, OSError):
-                return data
+                continue  # Пробуем ещё раз, если время не вышло
+            except (ConnectionResetError, OSError, ssl.SSLError):
+                break  # Ошибка соединения
+            except Exception:
+                break  # Любая другая ошибка
         return data
 
-# ============== УПРАВЛЕНИЕ КЛИЕНТАМИ ==============
 class ClientManager:
-    # ... (без изменений, код тот же) ...
     def __init__(self):
         self.clients: Dict[str, Dict] = {}
         self.lock = threading.RLock()
         self.next_ip = 2
         self.used_ips: Set[str] = set()
         self._load_state()
-    
     def _load_state(self):
         if CLIENTS_FILE.exists():
             try:
@@ -210,591 +180,326 @@ class ClientManager:
                     data = json.load(f)
                     self.used_ips = set(data.get('used_ips', []))
                     self.next_ip = max(data.get('next_ip', 2), 2)
-            except Exception as e:
-                logger.error(f"Failed to load clients state: {e}")
-    
+            except: pass
     def _save_state(self):
         try:
-            temp_file = CLIENTS_FILE.with_suffix('.tmp')
-            with open(temp_file, 'w') as f:
-                json.dump({'used_ips': list(self.used_ips), 'next_ip': self.next_ip}, f, indent=2)
-            temp_file.replace(CLIENTS_FILE)
-        except Exception as e:
-            logger.error(f"Failed to save clients state: {e}")
-    
+            tmp = CLIENTS_FILE.with_suffix('.tmp')
+            with open(tmp, 'w') as f: json.dump({'used_ips': list(self.used_ips), 'next_ip': self.next_ip}, f)
+            tmp.replace(CLIENTS_FILE)
+        except: pass
     def allocate_ip(self) -> Optional[str]:
         with self.lock:
-            network = ipaddress.ip_network(VPN_NETWORK)
-            max_hosts = min(network.num_addresses - 2, 254)
-            for _ in range(max_hosts):
+            for _ in range(254):
                 ip = f"10.8.0.{self.next_ip}"
-                if self.next_ip >= 255:
-                    self.next_ip = 2
-                else:
-                    self.next_ip += 1
+                self.next_ip = (self.next_ip % 253) + 2
                 if ip not in self.used_ips:
                     self.used_ips.add(ip)
                     self._save_state()
                     return ip
-            logger.error("No available IP addresses!")
             return None
-    
     def release_ip(self, ip: str):
         with self.lock:
             self.used_ips.discard(ip)
             self._save_state()
-    
-    def add_client(self, ip: str, handler, sock: socket.socket):
+    def add_client(self, ip: str, handler, sock):
         with self.lock:
-            self.clients[ip] = {'handler': handler, 'socket': sock, 'connected_at': datetime.now(), 'bytes_sent': 0, 'bytes_received': 0, 'packets_sent': 0, 'packets_received': 0}
+            self.clients[ip] = {'handler': handler, 'socket': sock, 'connected_at': datetime.now(), 'bytes_sent': 0, 'bytes_received': 0}
             logger.info(f"[+] Client {ip} registered (total: {len(self.clients)})")
-    
     def remove_client(self, ip: str):
         with self.lock:
             if ip in self.clients:
-                client = self.clients[ip]
-                uptime = (datetime.now() - client['connected_at']).total_seconds()
-                logger.info(f"[-] Client {ip} disconnected. Uptime: {int(uptime//3600):02d}:{int((uptime%3600)//60):02d}:{int(uptime%60):02d}, Sent: {self._format_bytes(client['bytes_sent'])}, Received: {self._format_bytes(client['bytes_received'])}")
+                c = self.clients[ip]
+                uptime = (datetime.now() - c['connected_at']).total_seconds()
+                logger.info(f"[-] Client {ip} disconnected. Uptime: {int(uptime)}s")
                 del self.clients[ip]
                 self.release_ip(ip)
-    
-    def get_client(self, ip: str) -> Optional[Dict]:
-        with self.lock:
-            return self.clients.get(ip)
-    
-    def get_all_clients(self) -> List[str]:
-        with self.lock:
-            return list(self.clients.keys())
-    
-    def update_stats(self, ip: str, sent: int = 0, received: int = 0, packets_sent: int = 0, packets_received: int = 0):
+    def get_client(self, ip: str):
+        with self.lock: return self.clients.get(ip)
+    def update_stats(self, ip: str, sent=0, received=0):
         with self.lock:
             if ip in self.clients:
                 self.clients[ip]['bytes_sent'] += sent
                 self.clients[ip]['bytes_received'] += received
-                self.clients[ip]['packets_sent'] += packets_sent
-                self.clients[ip]['packets_received'] += packets_received
-    
-    def get_stats(self) -> Dict:
+    def get_stats(self):
         with self.lock:
-            total_sent = sum(c['bytes_sent'] for c in self.clients.values())
-            total_received = sum(c['bytes_received'] for c in self.clients.values())
-            return {'total_clients': len(self.clients), 'total_bytes_sent': total_sent, 'total_bytes_received': total_received, 'clients': {ip: {'connected_at': c['connected_at'].isoformat(), 'bytes_sent': c['bytes_sent'], 'bytes_received': c['bytes_received'], 'packets_sent': c['packets_sent'], 'packets_received': c['packets_received']} for ip, c in self.clients.items()}}
-    
-    @staticmethod
-    def _format_bytes(bytes_count: int) -> str:
-        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
-            if bytes_count < 1024.0:
-                return f"{bytes_count:.2f} {unit}"
-            bytes_count /= 1024.0
-        return f"{bytes_count:.2f} PB"
+            return {'total_clients': len(self.clients), 'total_bytes_sent': sum(c['bytes_sent'] for c in self.clients.values()), 'total_bytes_received': sum(c['bytes_received'] for c in self.clients.values())}
 
-# ============== WINTUN ОБЕРТКА ==============
 class WintunWrapper:
-    # ... (без изменений, как в оригинале) ...
-    def __init__(self, dll_path: str = "wintun.dll"):
-        search_paths = [
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), dll_path),
-            os.path.join(os.getcwd(), dll_path),
-            os.path.join(os.environ.get('SystemRoot', 'C:\\Windows'), 'System32', dll_path),
-            dll_path
-        ]
-        found_path = None
-        for path in search_paths:
-            if os.path.exists(path):
-                found_path = path
-                break
-        if not found_path:
-            raise FileNotFoundError(f"wintun.dll not found in any of: {search_paths}")
-        logger.info(f"Loading wintun.dll from: {found_path}")
-        self.dll = ctypes.WinDLL(found_path)
-        
+    def __init__(self, dll_path="wintun.dll"):
+        paths = [os.path.join(os.path.dirname(__file__), dll_path), os.path.join(os.getcwd(), dll_path), dll_path]
+        path = next((p for p in paths if os.path.exists(p)), None)
+        if not path: raise FileNotFoundError("wintun.dll not found")
+        logger.info(f"Loading wintun.dll from: {path}")
+        self.dll = ctypes.WinDLL(path)
         self.WintunCreateAdapter = self.dll.WintunCreateAdapter
-        self.WintunCreateAdapter.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.LPCWSTR]
+        self.WintunCreateAdapter.argtypes = [wintypes.LPCWSTR]*3
         self.WintunCreateAdapter.restype = ctypes.c_void_p
-        
         self.WintunOpenAdapter = self.dll.WintunOpenAdapter
         self.WintunOpenAdapter.argtypes = [wintypes.LPCWSTR]
         self.WintunOpenAdapter.restype = ctypes.c_void_p
-        
         self.WintunCloseAdapter = self.dll.WintunCloseAdapter
         self.WintunCloseAdapter.argtypes = [ctypes.c_void_p]
         self.WintunCloseAdapter.restype = None
-        
         self.WintunAllocateSendPacket = self.dll.WintunAllocateSendPacket
         self.WintunAllocateSendPacket.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
         self.WintunAllocateSendPacket.restype = ctypes.c_void_p
-        
         self.WintunSendPacket = self.dll.WintunSendPacket
         self.WintunSendPacket.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
         self.WintunSendPacket.restype = None
-        
         self.WintunReceivePacket = self.dll.WintunReceivePacket
         self.WintunReceivePacket.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_uint32)]
         self.WintunReceivePacket.restype = ctypes.c_uint32
-        
         self.WintunReleaseReceivePacket = self.dll.WintunReleaseReceivePacket
         self.WintunReleaseReceivePacket.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
         self.WintunReleaseReceivePacket.restype = None
-        
-        try:
-            self.WintunDeleteAdapter = self.dll.WintunDeleteAdapter
-            self.WintunDeleteAdapter.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
-            self.WintunDeleteAdapter.restype = wintypes.BOOL
-        except AttributeError:
-            logger.info("[*] WintunDeleteAdapter not available in this DLL version")
-            self.WintunDeleteAdapter = None
-        
-        try:
-            self.WintunGetAdapterLUID = self.dll.WintunGetAdapterLUID
-            self.WintunGetAdapterLUID.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint64)]
-            self.WintunGetAdapterLUID.restype = None
-        except AttributeError:
-            self.WintunGetAdapterLUID = None
-        
         try:
             self.WintunGetRunningDriverVersion = self.dll.WintunGetRunningDriverVersion
-            self.WintunGetRunningDriverVersion.argtypes = []
             self.WintunGetRunningDriverVersion.restype = ctypes.c_uint32
-        except AttributeError:
-            self.WintunGetRunningDriverVersion = None
-            logger.info("[*] WintunGetRunningDriverVersion not available")
+        except: self.WintunGetRunningDriverVersion = None
 
 class TUNInterface:
-    # ... (без изменений) ...
-    def __init__(self, name: str, ip: str, netmask: str):
-        self.name = name
-        self.ip = ip
-        self.netmask = netmask
+    def __init__(self, name, ip, netmask):
+        self.name, self.ip, self.netmask = name, ip, netmask
         self.handle = None
         self.running = True
-        self.wintun: Optional[WintunWrapper] = None
-        self.read_lock = threading.RLock()
-        self.write_lock = threading.RLock()
-        self._initialize()
-    
-    def _initialize(self):
-        try:
-            self.wintun = WintunWrapper("wintun.dll")
-        except Exception as e:
-            logger.error(f"Wintun load error: {e}")
-            raise
+        self.wintun = WintunWrapper()
+        self.lock = threading.RLock()
         if self.wintun.WintunGetRunningDriverVersion:
-            version = self.wintun.WintunGetRunningDriverVersion()
-            logger.info(f"Wintun driver version: {version >> 16}.{version & 0xFFFF}")
-        self.handle = self.wintun.WintunOpenAdapter(self.name)
-        if not self.handle or self.handle == 0:
-            logger.info(f"Creating new adapter: {self.name}")
-            self.handle = self.wintun.WintunCreateAdapter(self.name, "Wintun", None)
-            if not self.handle or self.handle == 0:
-                raise Exception(f"Failed to create/open adapter {self.name}")
-        logger.info(f"[+] Virtual adapter '{self.name}' ready")
+            v = self.wintun.WintunGetRunningDriverVersion()
+            logger.info(f"Wintun driver version: {v>>16}.{v&0xFFFF}")
+        self.handle = self.wintun.WintunOpenAdapter(name)
+        if not self.handle:
+            logger.info(f"Creating adapter: {name}")
+            self.handle = self.wintun.WintunCreateAdapter(name, "Wintun", None)
+            if not self.handle: raise Exception("Failed to create adapter")
+        logger.info(f"[+] Adapter '{name}' ready")
         self._configure_ip()
-    
     def _configure_ip(self):
         try:
             import subprocess
-            cmd = f'netsh interface ip set address "{self.name}" static {self.ip} {self.netmask}'
-            result = subprocess.run(cmd, capture_output=True, text=True, shell=True)
-            if result.returncode == 0:
-                logger.info(f"[+] IP configured: {self.ip}/{self.netmask}")
-            else:
-                logger.info(f"[*] IP configuration: {result.stderr.strip() or 'already configured'}")
-            subprocess.run(f'netsh interface set interface "{self.name}" admin=enabled', capture_output=True, shell=True)
-            subprocess.run(f'netsh interface ip set dns "{self.name}" static 1.1.1.1', capture_output=True, shell=True)
-            subprocess.run(f'netsh interface ip add dns "{self.name}" 8.8.8.8 index=2', capture_output=True, shell=True)
-        except Exception as e:
-            logger.error(f"IP configuration error: {e}")
-    
-    def read(self, timeout: float = 0.1) -> Optional[bytes]:
-        if not self.handle or not self.running:
-            return None
-        with self.read_lock:
+            subprocess.run(f'netsh interface ip set address "{self.name}" static {self.ip} {self.netmask}', shell=True, capture_output=True)
+            subprocess.run(f'netsh interface set interface "{self.name}" admin=enabled', shell=True, capture_output=True)
+            logger.info(f"[+] IP configured: {self.ip}")
+        except Exception as e: logger.error(f"IP config error: {e}")
+    def read(self, timeout=0.1):
+        if not self.handle or not self.running: return None
+        with self.lock:
             try:
-                packet_ptr = ctypes.c_void_p()
-                packet_size = ctypes.c_uint32(0)
-                result = self.wintun.WintunReceivePacket(self.handle, ctypes.byref(packet_ptr), ctypes.byref(packet_size))
-                if result == 0 and packet_ptr and packet_ptr.value and packet_size.value > 0:
-                    data = ctypes.string_at(packet_ptr, packet_size.value)
-                    self.wintun.WintunReleaseReceivePacket(self.handle, packet_ptr)
+                ptr, size = ctypes.c_void_p(), ctypes.c_uint32(0)
+                if self.wintun.WintunReceivePacket(self.handle, ctypes.byref(ptr), ctypes.byref(size)) == 0 and ptr and size.value > 0:
+                    data = ctypes.string_at(ptr, size.value)
+                    self.wintun.WintunReleaseReceivePacket(self.handle, ptr)
                     return data
-                return None
-            except Exception as e:
-                logger.debug(f"TUN read error: {e}")
-                return None
-    
-    def write(self, packet: bytes) -> bool:
-        if not self.handle or not self.running or not packet:
-            return False
-        with self.write_lock:
+            except: pass
+        return None
+    def write(self, packet):
+        if not self.handle or not self.running or not packet: return False
+        with self.lock:
             try:
-                packet_ptr = self.wintun.WintunAllocateSendPacket(self.handle, len(packet))
-                if packet_ptr and packet_ptr != 0:
-                    ctypes.memmove(packet_ptr, packet, len(packet))
-                    self.wintun.WintunSendPacket(self.handle, packet_ptr)
+                ptr = self.wintun.WintunAllocateSendPacket(self.handle, len(packet))
+                if ptr:
+                    ctypes.memmove(ptr, packet, len(packet))
+                    self.wintun.WintunSendPacket(self.handle, ptr)
                     return True
-                return False
-            except Exception as e:
-                logger.debug(f"TUN write error: {e}")
-                return False
-    
+            except: pass
+        return False
     def close(self):
         self.running = False
         if self.handle:
-            try:
-                self.wintun.WintunCloseAdapter(self.handle)
-                logger.info(f"[+] Adapter '{self.name}' closed")
-            except Exception as e:
-                logger.error(f"Error closing adapter: {e}")
-            finally:
-                self.handle = None
+            try: self.wintun.WintunCloseAdapter(self.handle)
+            except: pass
 
-# ============== ГЕНЕРАЦИЯ SSL СЕРТИФИКАТА ==============
-# ... (без изменений) ...
 def generate_ssl_certificate():
     from cryptography import x509
     from cryptography.x509.oid import NameOID
-    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives import serialization, hashes
     from cryptography.hazmat.primitives.asymmetric import rsa
-    from cryptography.hazmat.primitives import hashes
     import datetime
     if CERT_FILE.exists() and KEY_FILE.exists():
-        logger.info("[*] SSL certificate already exists")
-        return
-    logger.info("[*] Generating new SSL certificate...")
-    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    subject = issuer = x509.Name([
-        x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
-        x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, "California"),
-        x509.NameAttribute(NameOID.LOCALITY_NAME, "San Francisco"),
-        x509.NameAttribute(NameOID.ORGANIZATION_NAME, "VPN Server"),
-        x509.NameAttribute(NameOID.COMMON_NAME, "vpn.local"),
-    ])
-    cert = x509.CertificateBuilder().subject_name(subject).issuer_name(issuer).public_key(private_key.public_key()).serial_number(x509.random_serial_number()).not_valid_before(datetime.datetime.now(datetime.timezone.utc)).not_valid_after(datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=3650)).add_extension(x509.SubjectAlternativeName([x509.DNSName("localhost"), x509.DNSName("vpn.local"), x509.IPAddress(ipaddress.IPv4Address("127.0.0.1"))]), critical=False).sign(private_key, hashes.SHA256())
-    with open(KEY_FILE, "wb") as f:
-        f.write(private_key.private_bytes(encoding=serialization.Encoding.PEM, format=serialization.PrivateFormat.PKCS8, encryption_algorithm=serialization.NoEncryption()))
-    os.chmod(KEY_FILE, 0o600)
-    with open(CERT_FILE, "wb") as f:
-        f.write(cert.public_bytes(serialization.Encoding.PEM))
-    logger.info("[+] SSL certificate created")
-    pubkey_file = CONFIG_DIR / "server_pubkey.pem"
-    with open(pubkey_file, "wb") as f:
-        f.write(cert.public_bytes(serialization.Encoding.PEM))
-    return cert.public_bytes(serialization.Encoding.PEM).decode()
+        logger.info("[*] SSL cert exists"); return
+    logger.info("[*] Generating SSL cert...")
+    key = rsa.generate_private_key(65537, 2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "vpn.local")])
+    cert = x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key()).serial_number(x509.random_serial_number()).not_valid_before(datetime.datetime.now(datetime.timezone.utc)).not_valid_after(datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(days=3650)).add_extension(x509.SubjectAlternativeName([x509.DNSName("localhost"), x509.IPAddress(ipaddress.IPv4Address("127.0.0.1"))]), False).sign(key, hashes.SHA256())
+    with open(KEY_FILE, "wb") as f: f.write(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())); os.chmod(KEY_FILE, 0o600)
+    with open(CERT_FILE, "wb") as f: f.write(cert.public_bytes(serialization.Encoding.PEM))
+    logger.info("[+] SSL cert created")
 
-# ============== ОБРАБОТЧИК КЛИЕНТА ==============
 class ClientHandler:
-    def __init__(self, sock: socket.socket, addr: tuple, vpn_server):
-        self.sock = sock
-        self.addr = addr
-        self.client_ip_str = addr[0]
-        self.vpn_server = vpn_server
-        self.assigned_ip: Optional[str] = None
+    def __init__(self, sock, addr, server):
+        self.sock, self.addr, self.server = sock, addr, server
+        self.client_ip = addr[0]
+        self.assigned_ip = None
         self.running = True
-        self.anti_dpi: Optional[AntiDPIEngine] = None
+        self.anti_dpi = None
         self.last_activity = time.time()
         self.write_lock = threading.RLock()
-        self.bytes_sent = 0
-        self.bytes_received = 0
-        self.packets_sent = 0
-        self.packets_received = 0
+        self.bytes_sent = self.bytes_received = 0
 
     def run(self):
         try:
-            self.sock.settimeout(30)
-            auth_success, nonce = self.vpn_server.auth_manager.authenticate(self.sock, self.client_ip_str)
-            if not auth_success:
-                logger.warning(f"Authentication failed from {self.addr}")
-                return
+            self.sock.settimeout(30.0)
+            ok, _ = self.server.auth_manager.authenticate(self.sock, self.client_ip)
+            if not ok:
+                logger.warning(f"Auth failed from {self.addr}"); return
             self.anti_dpi = AntiDPIEngine(is_server=True)
-            try:
-                session_keys = self.anti_dpi.perform_handshake(self.sock, self.client_ip_str)
-                logger.debug(f"PFS handshake completed with {self.addr}")
-            except Exception as e:
-                logger.error(f"PFS handshake failed: {e}")
-                import traceback
-                traceback.print_exc()
-                return
-            self.assigned_ip = self.vpn_server.client_manager.allocate_ip()
-            if not self.assigned_ip:
-                logger.error(f"No available IP for {self.addr}")
-                return
-            ip_message = self.anti_dpi.encrypt_packet(self.assigned_ip.encode())
-            self.sock.send(ip_message)
-            logger.info(f"[+] Client {self.addr} authenticated, assigned IP: {self.assigned_ip}")
-            self.vpn_server.client_manager.add_client(self.assigned_ip, self, self.sock)
-            send_thread = threading.Thread(target=self._send_worker, daemon=True)
-            send_thread.start()
-            while self.running and self.vpn_server.running:
+            try: self.anti_dpi.perform_handshake(self.sock, self.client_ip)
+            except Exception as e: logger.error(f"PFS failed: {e}"); return
+            self.assigned_ip = self.server.client_manager.allocate_ip()
+            if not self.assigned_ip: logger.error("No IP"); return
+            self.sock.sendall(self.anti_dpi.encrypt_packet(self.assigned_ip.encode()))
+            logger.info(f"[+] Client {self.addr} assigned IP: {self.assigned_ip}")
+            self.server.client_manager.add_client(self.assigned_ip, self, self.sock)
+            threading.Thread(target=self._send_worker, daemon=True).start()
+            while self.running and self.server.running:
                 try:
-                    header = self._recv_exact(14)
-                    if len(header) == 0:
-                        break
-                    if len(header) < 14:
-                        try:
-                            self.sock.setblocking(False)
-                            peek = self.sock.recv(1, socket.MSG_PEEK)
-                            self.sock.setblocking(True)
-                            if peek == b'':
-                                break
-                            continue
-                        except (BlockingIOError, socket.timeout):
-                            self.sock.setblocking(True)
-                            continue
-                        except:
-                            self.sock.setblocking(True)
-                            break
+                    header = self._recv_exact(self.sock, 14)
+                    if len(header) == 0: break
+                    if len(header) < 14: continue
                     length = struct.unpack('!H', header[12:14])[0]
                     if 0 < length < 65535:
-                        encrypted_data = self._recv_exact(length)
-                        if len(encrypted_data) == length:
-                            packet = self.anti_dpi.decrypt_packet(header + encrypted_data)
+                        data = self._recv_exact(length)
+                        if len(data) == length:
+                            packet = self.anti_dpi.decrypt_packet(header + data)
                             if packet:
-                                # Обработка heartbeat (пустой пакет)
                                 if len(packet) == 0:
-                                    logger.debug(f"[♥] Heartbeat from {self.assigned_ip}")
                                     self.last_activity = time.time()
                                     continue
-                                self.vpn_server.tun.write(packet)
+                                self.server.tun.write(packet)
                                 self.bytes_received += len(header) + length
-                                self.packets_received += 1
                                 self.last_activity = time.time()
-                except socket.timeout:
-                    continue
+                except socket.timeout: continue
                 except Exception as e:
-                    if self.running:
-                        logger.debug(f"Receive error from {self.assigned_ip}: {e}")
-                        break
-        except Exception as e:
-            logger.error(f"Client handler error for {self.addr}: {e}")
-            import traceback
-            traceback.print_exc()
-        finally:
-            self.cleanup()
+                    if self.running: logger.debug(f"Recv error: {e}"); break
+        except Exception as e: logger.error(f"Handler error: {e}")
+        finally: self.cleanup()
 
     def _send_worker(self):
-        packet_queue = queue.Queue(maxsize=1000)
-        with self.vpn_server.send_queues_lock:
-            self.vpn_server.send_queues[self.assigned_ip] = packet_queue
+        q = queue.Queue(maxsize=1000)
+        with self.server.send_queues_lock: self.server.send_queues[self.assigned_ip] = q
         try:
-            while self.running and self.vpn_server.running:
+            while self.running and self.server.running:
                 try:
-                    packet = packet_queue.get(timeout=0.5)
-                    encrypted = self.anti_dpi.encrypt_packet(packet)
-                    with self.write_lock:
-                        self.sock.send(encrypted)
-                        self.bytes_sent += len(encrypted)
-                        self.packets_sent += 1
-                except queue.Empty:
-                    continue
-                except Exception as e:
-                    if self.running:
-                        logger.debug(f"Send error to {self.assigned_ip}: {e}")
-                        break
+                    pkt = q.get(timeout=0.5)
+                    enc = self.anti_dpi.encrypt_packet(pkt)
+                    with self.write_lock: self.sock.sendall(enc); self.bytes_sent += len(enc)
+                except queue.Empty: continue
+                except: break
         finally:
-            with self.vpn_server.send_queues_lock:
-                if self.assigned_ip in self.vpn_server.send_queues:
-                    del self.vpn_server.send_queues[self.assigned_ip]
+            with self.server.send_queues_lock: self.server.send_queues.pop(self.assigned_ip, None)
 
-    def _recv_exact(self, n: int) -> bytes:
+    def _recv_exact(self, n):
         data = b''
-        while len(data) < n:
+        while len(data) < n and self.running:
             try:
                 chunk = self.sock.recv(n - len(data))
-                if not chunk:
-                    return data
+                if not chunk: return data
                 data += chunk
-            except socket.timeout:
-                return data
-            except (ConnectionResetError, OSError):
-                return data
+            except socket.timeout: return data
+            except: return data
         return data
 
-    def send_packet(self, packet: bytes) -> bool:
-        if not self.running:
-            return False
-        with self.vpn_server.send_queues_lock:
-            if self.assigned_ip in self.vpn_server.send_queues:
-                try:
-                    self.vpn_server.send_queues[self.assigned_ip].put_nowait(packet)
-                    return True
-                except:
-                    pass
+    def send_packet(self, pkt):
+        if not self.running: return False
+        with self.server.send_queues_lock:
+            q = self.server.send_queues.get(self.assigned_ip)
+            if q:
+                try: q.put_nowait(pkt); return True
+                except: pass
         return False
 
     def cleanup(self):
         self.running = False
         if self.assigned_ip:
-            self.vpn_server.client_manager.update_stats(self.assigned_ip, sent=self.bytes_sent, received=self.bytes_received, packets_sent=self.packets_sent, packets_received=self.packets_received)
-            self.vpn_server.client_manager.remove_client(self.assigned_ip)
-        try:
-            self.sock.close()
-        except:
-            pass
+            self.server.client_manager.update_stats(self.assigned_ip, self.bytes_sent, self.bytes_received)
+            self.server.client_manager.remove_client(self.assigned_ip)
+        try: self.sock.close()
+        except: pass
 
-# ============== ГЛАВНЫЙ VPN СЕРВЕР ==============
-# ... (остальная часть сервера без изменений, кроме _show_banner и stop) ...
 class VPNServer:
     def __init__(self):
         self.running = True
         self.start_time = time.time()
         self.auth_manager = SecureAuthManager()
         self.client_manager = ClientManager()
-        self.send_queues: Dict[str, 'queue.Queue'] = {}
+        self.send_queues = {}
         self.send_queues_lock = threading.RLock()
         self.ports = [PORT] + ALT_PORTS
-        self.server_sockets: List[socket.socket] = []
+        self.sockets = []
         generate_ssl_certificate()
-        logger.info("[1/4] Initializing TUN interface...")
+        logger.info("[1/4] TUN...")
         self.tun = TUNInterface(TUN_NAME, VPN_SERVER_IP, VPN_NETMASK)
-        logger.info("[2/4] Starting TUN reader...")
-        self.tun_thread = threading.Thread(target=self._tun_reader, daemon=True)
-        self.tun_thread.start()
-        logger.info("[3/4] Starting listeners...")
+        logger.info("[2/4] TUN reader...")
+        threading.Thread(target=self._tun_reader, daemon=True).start()
+        logger.info("[3/4] Listeners...")
         self._start_listeners()
-        logger.info("[4/4] Starting stats monitor...")
-        self.stats_thread = threading.Thread(target=self._stats_monitor, daemon=True)
-        self.stats_thread.start()
-        self._show_banner()
+        logger.info("[4/4] Stats...")
+        threading.Thread(target=self._stats_monitor, daemon=True).start()
+        logger.info(f"\n{'='*60}\nVPN SERVER 2026\nPorts: {self.ports}\n{'='*60}")
 
     def _start_listeners(self):
         for port in self.ports:
-            thread = threading.Thread(target=self._listen_on_port, args=(port,), daemon=True)
-            thread.start()
+            threading.Thread(target=self._listen, args=(port,), daemon=True).start()
 
-    def _listen_on_port(self, port: int):
+    def _listen(self, port):
         try:
             anti_dpi = AntiDPIEngine(is_server=True)
             context = anti_dpi.tls_impersonator.create_ssl_context(is_server=True)
             context.load_cert_chain(str(CERT_FILE), str(KEY_FILE))
-            server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            server_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            server_sock.bind((HOST, port))
-            server_sock.listen(100)
-            self.server_sockets.append(server_sock)
-            secure_server = context.wrap_socket(server_sock, server_side=True)
-            logger.info(f"[*] Listening on port {port} (JA3: {anti_dpi.tls_impersonator.current_profile})")
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind((HOST, port))
+            sock.listen(100)
+            self.sockets.append(sock)
+            ssl_sock = context.wrap_socket(sock, server_side=True)
+            logger.info(f"[*] Listening on {port}")
             while self.running:
                 try:
-                    secure_server.settimeout(1.0)
-                    client_sock, addr = secure_server.accept()
-                    logger.info(f"[*] New SSL connection from {addr} on port {port}")
-                    handler = ClientHandler(client_sock, addr, self)
-                    thread = threading.Thread(target=handler.run, daemon=True)
-                    thread.start()
-                except socket.timeout:
-                    continue
-                except ssl.SSLError as e:
-                    if self.running:
-                        logger.debug(f"SSL error on port {port}: {e}")
-                except Exception as e:
-                    if self.running:
-                        logger.error(f"Error on port {port}: {e}")
-        except Exception as e:
-            logger.error(f"Failed to start listener on port {port}: {e}")
+                    ssl_sock.settimeout(1.0)
+                    c, a = ssl_sock.accept()
+                    logger.info(f"[*] Connection from {a}")
+                    threading.Thread(target=ClientHandler(c, a, self).run, daemon=True).start()
+                except socket.timeout: continue
+                except: continue
+        except Exception as e: logger.error(f"Listen error {port}: {e}")
 
     def _tun_reader(self):
-        logger.info("[*] TUN reader started")
         while self.running:
-            try:
-                packet = self.tun.read(timeout=0.1)
-                if packet and len(packet) >= 20:
-                    try:
-                        dest_ip = socket.inet_ntoa(packet[16:20])
-                        client_data = self.client_manager.get_client(dest_ip)
-                        if client_data:
-                            handler = client_data['handler']
-                            handler.send_packet(packet)
-                    except Exception as e:
-                        logger.debug(f"TUN routing error: {e}")
-            except Exception as e:
-                if self.running:
-                    logger.debug(f"TUN reader error: {e}")
+            pkt = self.tun.read(0.1)
+            if pkt and len(pkt) >= 20:
+                try:
+                    ip = socket.inet_ntoa(pkt[16:20])
+                    c = self.client_manager.get_client(ip)
+                    if c: c['handler'].send_packet(pkt)
+                except: pass
 
     def _stats_monitor(self):
         while self.running:
             time.sleep(60)
-            stats = self.client_manager.get_stats()
-            uptime = time.time() - self.start_time
-            logger.info(f"[STATS] Uptime: {int(uptime//3600):02d}:{int((uptime%3600)//60):02d}, Clients: {stats['total_clients']}, Total: ↑{self._format_bytes(stats['total_bytes_sent'])} ↓{self._format_bytes(stats['total_bytes_received'])}")
-
-    def _show_banner(self):
-        banner = f"""
-======================================================================
-                    VPN SERVER 2026 - SECURE MODE
-======================================================================
-  Status:           [RUNNING]
-  Ports:            {', '.join(map(str, self.ports))}
-  VPN Network:      {VPN_NETWORK}
-  Server IP:        {VPN_SERVER_IP}
-  PFS:              ENABLED (X25519 + Double Ratchet)
-  Anti-DPI:         ENABLED (JA3 + SNI Spoofing + Obfuscation)
-  Auth Salt:        {self.auth_manager.salt[:8].hex()}...
-======================================================================
-  Clients: {len(self.client_manager.clients)}
-======================================================================
-"""
-        logger.info(banner)
+            s = self.client_manager.get_stats()
+            logger.info(f"[STATS] Uptime: {int(time.time()-self.start_time)//60}m, Clients: {s['total_clients']}")
 
     def stop(self):
-        logger.info("\n[!] Shutting down server...")
+        logger.info("[!] Stopping...")
         self.running = False
-        for sock in self.server_sockets:
-            try:
-                sock.close()
-            except:
-                pass
+        for s in self.sockets:
+            try: s.close()
+            except: pass
         self.tun.close()
-        logger.info("[+] Server stopped")
+        logger.info("[+] Stopped")
 
-    @staticmethod
-    def _format_bytes(bytes_count: int) -> str:
-        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
-            if bytes_count < 1024.0:
-                return f"{bytes_count:.2f} {unit}"
-            bytes_count /= 1024.0
-        return f"{bytes_count:.2f} PB"
+def check_admin():
+    try: return ctypes.windll.shell32.IsUserAnAdmin() != 0
+    except: return False
 
-# ============== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==============
-def check_admin() -> bool:
-    try:
-        return ctypes.windll.shell32.IsUserAnAdmin() != 0
-    except:
-        return False
-
-def setup_signal_handlers(server: VPNServer):
-    def signal_handler(signum, frame):
-        logger.info(f"\n[!] Received signal {signum}")
-        server.stop()
-        sys.exit(0)
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-
-# ============== ТОЧКА ВХОДА ==============
 if __name__ == "__main__":
-    print("=" * 60)
-    print("VPN SERVER 2026")
-    print("=" * 60)
-    if not check_admin():
-        print("[!] ERROR: Administrator privileges required!")
-        print("    Run this script as Administrator")
-        sys.exit(1)
-    if not os.path.exists("wintun.dll"):
-        print("[!] ERROR: wintun.dll not found!")
-        print("    Download from: https://www.wintun.net/")
-        sys.exit(1)
+    if not check_admin(): print("[!] Run as Admin"); sys.exit(1)
+    if not os.path.exists("wintun.dll"): print("[!] wintun.dll missing"); sys.exit(1)
+    server = None
     try:
         server = VPNServer()
-        setup_signal_handlers(server)
-        while server.running:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        pass
-    except Exception as e:
-        logger.error(f"Fatal error: {e}")
-        import traceback
-        traceback.print_exc()
+        signal.signal(signal.SIGINT, lambda s,f: server.stop())
+        while server.running: time.sleep(1)
+    except KeyboardInterrupt: pass
     finally:
-        if 'server' in locals():
-            server.stop()
-        print("\n[+] Server shutdown complete")
+        if server: server.stop()
