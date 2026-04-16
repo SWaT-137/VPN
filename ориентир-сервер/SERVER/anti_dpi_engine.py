@@ -114,30 +114,28 @@ class MultiLayerObfuscator:
         self.lock = threading.RLock()
     
     def obfuscate(self, data: bytes, packet_id: int = None) -> bytes:
-        """Шифрование с синхронизированным счётчиком"""
+        """Шифрование — используем только внутренний счётчик"""
         with self.lock:
-            # Используем внутренний счётчик вместо внешнего packet_id
+            # Игнорируем packet_id, используем packet_counter для синхронизации
             xor_key = hashlib.sha256(self.session_key + self.packet_counter.to_bytes(8, 'big')).digest()
             res = bytes(a ^ b for a, b in zip(data, xor_key * (len(data) // len(xor_key) + 1)))
             pad = secrets.token_bytes(secrets.randbelow(32) + 1)
             result = struct.pack('!H', len(pad)) + pad + res
-            self.packet_counter += 1  # Инкремент ПОСЛЕ использования
+            self.packet_counter += 1  # ✅ Инкремент ПОСЛЕ использования
             return result
     
     def deobfuscate(self, data: bytes) -> Tuple[bytes, int]:
-        """Дешифрование с синхронизированным счётчиком"""
+        """Дешифрование — симметрично obfuscate"""
         with self.lock:
-            # ✅ Добавлена проверка и дефолтный возврат
             if len(data) >= 2:
                 pl = struct.unpack('!H', data[:2])[0]
                 if pl + 2 <= len(data):
                     data = data[2+pl:]
                     xor_key = hashlib.sha256(self.session_key + self.packet_counter.to_bytes(8, 'big')).digest()
                     res = bytes(a ^ b for a, b in zip(data, xor_key * (len(data) // len(xor_key) + 1)))
-                    self.packet_counter += 1  # Инкремент ПОСЛЕ использования
+                    self.packet_counter += 1  # ✅ Инкремент ПОСЛЕ использования
                     return res, self.packet_counter
-            # ✅ Дефолтный возврат при ошибке
-            return b'', 0
+            return b'', 0  # ✅ Дефолтный возврат при ошибке
 
 class AdvancedSNISpoofer:
     def __init__(self):
