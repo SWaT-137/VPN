@@ -1,3 +1,4 @@
+# reality_engine.py
 #!/usr/bin/env python3
 """
 Reality + VLESS Cryptographic Engine
@@ -7,13 +8,14 @@ import os
 import struct
 import hashlib
 import logging
+import socket # Для inet_aton, inet_ntoa
 from cryptography.hazmat.primitives.asymmetric import x25519
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 
+# ИСПРАВЛЕНО: logger = logging.getLogger(__name__)
 logger = logging.getLogger(__name__)
-
 
 class RealityEngine:
     SHORT_ID_LEN = 8
@@ -28,40 +30,45 @@ class RealityEngine:
             self.private_key = x25519.X25519PrivateKey.from_private_bytes(private_key_bytes)
         else:
             self.private_key = x25519.X25519PrivateKey.generate()
-        self.public_key = self.private_key.public_key().public_bytes()
+        # ИСПРАВЛЕНО: .public_bytes_raw()
+        self.public_key = self.private_key.public_key().public_bytes_raw()
         self.short_id = short_id or os.urandom(self.SHORT_ID_LEN)
         self.traffic_key = None
         self.cipher = None
         logger.info("[+] Reality engine initialized")
 
     # --- Handshake (Reality-like) ---
-    def client_handshake(self, sock, server_ip: str, server_port: int) -> bool:
+    async def client_handshake(self, reader, writer) -> bool:
         """Клиент: отправляет SHORT_ID + Ephemeral PubKey, получает Server PubKey + Auth Tag"""
         try:
             client_eph = x25519.X25519PrivateKey.generate()
-            client_pub = client_eph.public_key().public_bytes()
-            sock.sendall(self.short_id + client_pub)
+            # ИСПРАВЛЕНО: .public_bytes_raw()
+            client_pub = client_eph.public_key().public_bytes_raw()
+            writer.write(self.short_id + client_pub)
+            await writer.drain()
 
-            response = self._recv_exact(sock, self.PUB_KEY_LEN + 32)
+            response = await self._read_exact(reader, self.PUB_KEY_LEN + 32)
             server_pub = response[:self.PUB_KEY_LEN]
             auth_tag = response[self.PUB_KEY_LEN:]
 
-            shared = client_eph.exchange(x25519.X25519PublicKey.from_public_bytes(server_pub))
+            # ИСПРАВЛЕНО: .from_public_bytes_raw()
+            shared = client_eph.exchange(x25519.X25519PublicKey.from_public_bytes_raw(server_pub))
             expected_tag = hashlib.sha256(client_pub + server_pub + self.short_id).digest()
             if auth_tag != expected_tag:
                 logger.error("[!] Reality handshake failed: invalid auth tag")
                 return False
 
             self._derive_traffic_key(shared)
+            logger.info("[+] Reality handshake completed successfully")
             return True
         except Exception as e:
             logger.error(f"[!] Handshake client error: {e}")
             return False
 
-    def server_handshake(self, sock) -> bool:
+    async def server_handshake(self, reader, writer) -> bool:
         """Сервер: проверяет SHORT_ID, отправляет PubKey + Auth Tag"""
         try:
-            client_data = self._recv_exact(sock, self.SHORT_ID_LEN + self.PUB_KEY_LEN)
+            client_data = await self._read_exact(reader, self.SHORT_ID_LEN + self.PUB_KEY_LEN)
             short_id_recv = client_data[:self.SHORT_ID_LEN]
             client_pub = client_data[self.SHORT_ID_LEN:]
 
@@ -69,11 +76,15 @@ class RealityEngine:
                 logger.warning("[!] Reality handshake failed: invalid short_id")
                 return False
 
-            shared = self.private_key.exchange(x25519.X25519PublicKey.from_public_bytes(client_pub))
+            # ИСПРАВЛЕНО: .from_public_bytes_raw()
+            shared = self.private_key.exchange(x25519.X25519PublicKey.from_public_bytes_raw(client_pub))
             auth_tag = hashlib.sha256(client_pub + self.public_key + self.short_id).digest()
-            sock.sendall(self.public_key + auth_tag)
+            # ИСПРАВЛЕНО: .public_bytes_raw()
+            writer.write(self.public_key + auth_tag)
+            await writer.drain()
 
             self._derive_traffic_key(shared)
+            logger.info("[+] Reality handshake completed successfully")
             return True
         except Exception as e:
             logger.error(f"[!] Handshake server error: {e}")
@@ -87,38 +98,43 @@ class RealityEngine:
         self.cipher = ChaCha20Poly1305(self.traffic_key)
 
     # --- AEAD + Framing ---
-    def encrypt_packet(self, data: bytes) -> bytes:
+    def encrypt_packet(self,  bytes) -> bytes:
         nonce = os.urandom(self.NONCE_LEN)
         ct = self.cipher.encrypt(nonce, data, None)
         return nonce + ct
 
-    def decrypt_packet(self, data: bytes) -> bytes:
+    def decrypt_packet(self,  bytes) -> bytes:
         nonce = data[:self.NONCE_LEN]
         ct = data[self.NONCE_LEN:]
         return self.cipher.decrypt(nonce, ct, None)
 
     @staticmethod
     def pack_vless_header(dest_ip: str, dest_port: int) -> bytes:
-        return struct.pack("!B B H B 4s 2s",
+        return struct.pack("!B B H B 4s",
                            RealityEngine.VLESS_VERSION,
                            RealityEngine.VLESS_CMD_TCP,
                            dest_port,
                            RealityEngine.VLESS_ADDR_IPv4,
-                           socket.inet_aton(dest_ip),
-                           b"\x00\x00"
-                           )
+                           socket.inet_aton(dest_ip)
+                          )
 
     @staticmethod
     def unpack_vless_header(data: bytes):
-        if len(data) < 10:
+        if len(data) < 8: # Updated for IPv4 header size
             return None
-        ver, cmd, port, addr_type, addr_ip, reserved = struct.unpack("!B B H B 4s 2s", data[:10])
-        return ver, cmd, port, addr_type, socket.inet_ntoa(addr_ip), reserved
+        ver, cmd, port, addr_type = struct.unpack("!B B H B", data[:6])
+        addr_ip = data[6:10]
+        if addr_type == RealityEngine.VLESS_ADDR_IPv4:
+            addr_str = socket.inet_ntoa(addr_ip)
+        else:
+            return None # Unsupported address type for now
+        return ver, cmd, port, addr_type, addr_str
 
-    def _recv_exact(self, sock, length: int) -> bytes:
+    @staticmethod
+    async def _read_exact(reader, length: int) -> bytes:
         data = b""
         while len(data) < length:
-            chunk = sock.recv(length - len(data))
+            chunk = await reader.read(length - len(data))
             if not chunk:
                 raise ConnectionError("Connection closed during recv")
             data += chunk
