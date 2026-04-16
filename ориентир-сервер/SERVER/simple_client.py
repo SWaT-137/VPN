@@ -329,7 +329,7 @@ class VPNClient:
             logger.info("[+] PFS handshake completed")
             
             logger.info("[+] Waiting for IP assignment...")
-            header = self._recv_exact(self.sock, 14)
+            header = self._recv_exact(14)
             if len(header) < 14:
                 raise ConnectionError("Failed to receive IP header")
             length = struct.unpack('!H', header[12:14])[0]
@@ -385,7 +385,7 @@ class VPNClient:
     def _network_reader_loop(self):
         while self.running:
             try:
-                header = self._recv_exact(self.sock, 14)
+                header = self._recv_exact(14)
                 if len(header) == 0:
                     logger.warning("[!] Server closed connection (EOF)")
                     break
@@ -412,25 +412,24 @@ class VPNClient:
                     logger.error(f"[!] Reader error: {e}")
                     break
 
-    def _recv_exact(self, sock: socket.socket, length: int, timeout: float = 30.0) -> bytes:
-        """Безопасное получение байт с обработкой таймаутов"""
+    def _recv_exact(self, length: int) -> bytes:
+        """Безопасное получение байт — использует self.sock"""
         data = b''
-        deadline = time.time() + timeout
+        deadline = time.time() + 30.0
         while len(data) < length and time.time() < deadline:
             try:
-                # Динамический таймаут
                 remaining = max(0.1, deadline - time.time())
-                sock.settimeout(remaining)
-                chunk = sock.recv(length - len(data))
+                self.sock.settimeout(remaining)
+                chunk = self.sock.recv(length - len(data))
                 if not chunk:
-                    break  # EOF
+                    break
                 data += chunk
             except socket.timeout:
-                continue  # Пробуем ещё раз, если время не вышло
+                continue
             except (ConnectionResetError, OSError, ssl.SSLError):
-                break  # Ошибка соединения
+                break
             except Exception:
-                break  # Любая другая ошибка
+                break
         return data
 
     def _heartbeat_loop(self):
