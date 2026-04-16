@@ -145,27 +145,25 @@ class SecureAuthManager:
             try: sock.settimeout(original_timeout)
             except: pass
 
-    def _recv_exact(self, sock: socket.socket, length: int, timeout: float = 30.0) -> bytes:
-        """Безопасное получение байт с обработкой таймаутов"""
+    def _recv_exact(self, sock: socket.socket, length: int) -> bytes:
+        """Безопасное получение байт — только 2 параметра"""
         data = b''
-        deadline = time.time() + timeout
-        while len(data) < length and time.time() < deadline:
-            try:
-                # Динамический таймаут
-                remaining = max(0.1, deadline - time.time())
-                sock.settimeout(remaining)
+        original_timeout = sock.gettimeout()
+        try:
+            sock.settimeout(10.0)  # Фиксированный таймаут
+            while len(data) < length:
                 chunk = sock.recv(length - len(data))
                 if not chunk:
-                    break  # EOF
+                    break
                 data += chunk
-            except socket.timeout:
-                continue  # Пробуем ещё раз, если время не вышло
-            except (ConnectionResetError, OSError, ssl.SSLError):
-                break  # Ошибка соединения
-            except Exception:
-                break  # Любая другая ошибка
+        except (socket.timeout, ConnectionResetError, OSError):
+            pass  # Возвращаем то, что успели получить
+        finally:
+            try:
+                sock.settimeout(original_timeout)
+            except:
+                pass
         return data
-
 class ClientManager:
     def __init__(self):
         self.clients: Dict[str, Dict] = {}
@@ -353,7 +351,7 @@ class ClientHandler:
             threading.Thread(target=self._send_worker, daemon=True).start()
             while self.running and self.server.running:
                 try:
-                    header = self._recv_exact(self.sock, 14)
+                    header = self._recv_exact(14)
                     if len(header) == 0: break
                     if len(header) < 14: continue
                     length = struct.unpack('!H', header[12:14])[0]

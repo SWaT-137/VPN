@@ -251,7 +251,7 @@ class AsyncVPNServer:
             salt = await self._read_exact(reader, 16)
             session_crypto = SessionCrypto(PASSWORD, salt)
 
-            auth = await self._read_exact(reader, 58) # 56 hex chars + \r\n
+            auth = await self._read_exact(reader, 66) # 56 hex chars + \r\n
             expected = hashlib.sha256(PASSWORD.encode() + salt).hexdigest().encode() + b'\r\n'
 
             if auth != expected:
