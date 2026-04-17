@@ -391,10 +391,15 @@ class ClientHandler:
         while len(data) < n and self.running:
             try:
                 chunk = self.sock.recv(n - len(data))
-                if not chunk: return data
+                if not chunk:
+                    return b''
                 data += chunk
-            except socket.timeout: return data
-            except: return data
+            except socket.timeout:
+                if not data:
+                    raise
+                return data
+            except (ConnectionResetError, OSError):
+                return b''
         return data
 
     def send_packet(self, pkt):
