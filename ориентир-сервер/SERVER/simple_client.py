@@ -413,23 +413,20 @@ class VPNClient:
                     break
 
     def _recv_exact(self, length: int) -> bytes:
-        """Безопасное получение байт — использует self.sock"""
+        """Безопасное получение байт с корректной обработкой таймаутов и EOF"""
         data = b''
-        deadline = time.time() + 30.0
-        while len(data) < length and time.time() < deadline:
+        while len(data) < length:
             try:
-                remaining = max(0.1, deadline - time.time())
-                self.sock.settimeout(remaining)
                 chunk = self.sock.recv(length - len(data))
                 if not chunk:
-                    break
+                    return b''  # Настоящий EOF (сервер закрыл соединение)
                 data += chunk
             except socket.timeout:
-                continue
-            except (ConnectionResetError, OSError, ssl.SSLError):
-                break
-            except Exception:
-                break
+                if not data:
+                    raise  # Пробрасываем таймаут, чтобы цикл мог продолжить ожидание
+                return data  # Частичные данные (если таймаут сработал посередине чтения)
+            except (ConnectionResetError, OSError):
+                return b''
         return data
 
     def _heartbeat_loop(self):
