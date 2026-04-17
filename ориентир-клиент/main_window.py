@@ -4,7 +4,7 @@ import json
 
 from PySide6.QtWidgets import QApplication, QWidget, QPushButton, QLabel, QLineEdit, QMenu, QVBoxLayout
 from PySide6.QtGui import QFont, QPainter, QColor, QAction, QPen, Qt
-from PySide6.QtCore import QPropertyAnimation, QEasingCurve, QRectF, Property, Signal, QPoint
+from PySide6.QtCore import QPropertyAnimation, QEasingCurve, QRectF, Property, Signal, QPoint, QTimer
 
 
 class ToggleSwitch(QWidget):
@@ -133,8 +133,28 @@ class MainWindow(QWidget):
         self.speed_label.setFont(QFont("JetBrains Mono", 9, QFont.Weight.Medium))
         self.speed_label.setVisible(False)
 
+        #Таймер
+        self.timer_seconds = 0
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.update_timer)
+
+        self.timer_label = QLabel("Время подключения: 00:00:00", self)
+        self.timer_label.setGeometry(50, 395, 200, 20)
+        self.timer_label.setFixedSize(225, 30)
+        self.timer_label.setStyleSheet("color: white; font-size: 14px;")
+        self.timer_label.setFont(QFont("Montserrat", 14, QFont.Weight.Normal))
+        self.timer_label.setVisible(False)
+
         self.load_settings()
         self.overlay = OverlayDialog(self)
+
+    def update_timer(self):
+        self.timer_seconds += 1
+        hours = self.timer_seconds // 3600
+        minutes = (self.timer_seconds % 3600) // 60
+        seconds = self.timer_seconds % 60
+        time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        self.timer_label.setText(f"Время подключения: {time_str}")
 
     def load_settings(self):
         if os.path.exists(self.settings_file):
@@ -194,6 +214,12 @@ class MainWindow(QWidget):
             self.speed_label.setText(f"Speed: ↓ {self.speed} | ↑ {self.speed1}")
             self.speed_label.setVisible(True)
 
+            self.timer_seconds = 0
+            self.timer.start(1000)
+
+            self.timer_label.setVisible(True)
+            self.update_timer()
+
         else:
             self.status_label.setText("Отключено")
             self.status_label.setGeometry(90, 310, 200, 20)
@@ -206,6 +232,10 @@ class MainWindow(QWidget):
             self.speed_label.setText(f"Speed:")
             self.speed_label.setStyleSheet("color: white")
             self.speed_label.setVisible(False)
+
+            self.timer_label.setVisible(False)
+            self.timer.stop()
+
 
     def show_settings_overlay(self):
         content = QWidget()
@@ -272,7 +302,7 @@ class MainWindow(QWidget):
 
         self.save_button = QPushButton(content)
         self.save_button.setText("Сохранить")
-        self.save_button.setGeometry(150, 275, 20, 10)
+        self.save_button.setGeometry(100, 275, 20, 10)
         self.save_button.setFixedSize(100, 50)
         self.save_button.setStyleSheet("""
             background-color: #4CAF50;
@@ -311,6 +341,9 @@ class MainWindow(QWidget):
     def show_stats_overlay(self):
         content = QWidget()
 
+        content.setLayout(None)
+        content.setFixedSize(320, 500)
+
         trafic_label = QLabel(f"Всего использовано: {self.traficZnachenie} {self.Format}", content)
         trafic_label.setStyleSheet("""
             color: white;
@@ -342,6 +375,8 @@ class MainWindow(QWidget):
         """)
 
         exit_button = QPushButton("Выход",content)
+        exit_button.setGeometry(100, 275, 20, 10)
+        exit_button.setFixedSize(40, 20)
         exit_button.setStyleSheet("""
             background-color: #f44336;
             color: white;
@@ -351,12 +386,6 @@ class MainWindow(QWidget):
             font-weight: bold;
         """)
         exit_button.clicked.connect(self.overlay.hide_overlay)
-
-        layout = QVBoxLayout(content)
-        layout.addWidget(trafic_label)
-        layout.addWidget(speed_label)
-        layout.addWidget(connection_label)
-        layout.addWidget(exit_button)
 
         self.overlay.show_with_content(content)
 
