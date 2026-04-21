@@ -307,9 +307,9 @@ class VPNClient:
             raw_sock.connect((self.host, self.port))
             logger.info(f"Connected to {self.host}:{self.port}")
             
+            # 1. Оборачиваем в TLS (ALPN, SNI и шифры теперь настраиваются внутри AntiDPI)
             self.anti_dpi = AntiDPIEngine(is_server=False)
-            self.sock = self.anti_dpi.wrap_socket(raw_sock, verify_cert=False)
-            # Сбрасываем наследуемый таймаут
+            self.sock = self.anti_dpi.wrap_socket(raw_sock)
             self.sock.settimeout(30.0)
             
             logger.info("SSL connection established, checking certificate pin...")
@@ -317,43 +317,47 @@ class VPNClient:
             if not self.cred_manager.verify_certificate(cert_der):
                 raise ssl.SSLError("Certificate pin mismatch")
             
+            # 2. Авторизация (НОВЫЙ ФОРМАТ: рандомный размер, чтобы не светить паттерн Trojan)
             password = self.cred_manager.password
             password_hash = hashlib.sha224(password.encode()).hexdigest()
-            client_nonce = secrets.token_bytes(6)
-            auth_data = password_hash.encode() + client_nonce + b'\r\n'
-            self.sock.sendall(auth_data)
+            random_pad = secrets.token_bytes(secrets.randbelow(64)) # 0-63 байта мусора
+            auth_payload = random_pad + password_hash.encode() + b'\r\n'
+            
+            # Отправляем: 1 байт длины полезной нагрузки + сама полезная нагрузка
+            self.sock.sendall(bytes([len(auth_payload)]) + auth_payload)
             logger.info("[+] Authentication sent")
             
-            logger.info("[+] Performing PFS handshake...")
-            self.anti_dpi.perform_handshake(self.sock)
-            logger.info("[+] PFS handshake completed")
+            # 3. X25519 PFS хэндшейк УДАЛЕН (TLS 1.3 уже обеспечивает PFS)
             
+            # 4. Получение IP (НОВЫЙ ФОРМАТ: 2 байта длины + данные)
             logger.info("[+] Waiting for IP assignment...")
-            header = self._recv_exact(14)
-            if len(header) < 14:
+            header = self._recv_exact(2)
+            if len(header) < 2:
                 raise ConnectionError("Failed to receive IP header")
-            length = struct.unpack('!H', header[12:14])[0]
-            encrypted_data = self._recv_exact(length)
-            if len(encrypted_data) != length:
+            
+            length = struct.unpack('!H', header)[0]
+            ip_data = self._recv_exact(length)
+            if len(ip_data) != length:
                 raise ConnectionError("Failed to receive IP packet")
-            decrypted_ip = self.anti_dpi.decrypt_packet(header + encrypted_data)
-            if not decrypted_ip:
-                raise ConnectionError("Failed to decrypt IP")
-            self.assigned_ip = decrypted_ip.decode()
+            
+            # Дешифрация убрана, читаем как есть
+            self.assigned_ip = ip_data.decode()
             logger.info(f"[+] Assigned IP: {self.assigned_ip}")
             
+            # 5. Настройка TUN адаптера
             self.tun = TunInterface()
             self.tun.create()
             self.tun.set_ip(self.assigned_ip)
             
+            # 6. Запуск потоков (Heartbeat УДАЛЕН — пустые пакеты маячили для DPI)
             self.running = True
             threading.Thread(target=self._tun_reader_loop, daemon=True).start()
             threading.Thread(target=self._network_reader_loop, daemon=True).start()
             threading.Thread(target=self._stats_monitor, daemon=True).start()
-            threading.Thread(target=self._heartbeat_loop, daemon=True).start()
             
             logger.info(f"[+] Connected to VPN server at {self.host}:{self.port}")
             return True
+            
         except Exception as e:
             logger.error(f"Connection error: {e}")
             logger.exception(e)
@@ -374,10 +378,11 @@ class VPNClient:
             packet = self.tun.read(timeout=0.05)
             if packet:
                 try:
-                    encrypted = self.anti_dpi.encrypt_packet(packet)
-                    self.sock.sendall(encrypted)
+                    # Простой фрейминг вместо тяжелого шифрования
+                    framed = self.anti_dpi.encrypt_packet(packet)
+                    self.sock.sendall(framed)
                     with self.stats_lock:
-                        self.stats['bytes_sent'] += len(encrypted)
+                        self.stats['bytes_sent'] += len(framed)
                         self.stats['packets_sent'] += 1
                 except Exception:
                     if self.running: break
@@ -385,17 +390,19 @@ class VPNClient:
     def _network_reader_loop(self):
         while self.running:
             try:
-                header = self._recv_exact(14)
+                # ✅ Читаем 2 байта заголовка
+                header = self._recv_exact(2)
                 if len(header) == 0:
                     logger.warning("[!] Server closed connection (EOF)")
                     break
-                if len(header) < 14:
+                if len(header) < 2:
                     continue
-                length = struct.unpack('!H', header[12:14])[0]
+                length = struct.unpack('!H', header)[0]
                 if 0 < length < 65535:
                     encrypted_data = self._recv_exact(length)
                     if len(encrypted_data) == length:
-                        packet = self.anti_dpi.decrypt_packet(header + encrypted_data)
+                        # Дешифрация убрана
+                        packet = encrypted_data
                         if packet and self.tun:
                             self.tun.write(packet)
                             with self.stats_lock:
@@ -429,15 +436,7 @@ class VPNClient:
                 return b''
         return data
 
-    def _heartbeat_loop(self):
-        while self.running:
-            time.sleep(20)
-            if self.running and self.sock and self.anti_dpi:
-                try:
-                    hb = self.anti_dpi.encrypt_packet(b'')
-                    self.sock.sendall(hb)
-                except Exception:
-                    break
+    
 
     def _stats_monitor(self):
         start = time.time()
