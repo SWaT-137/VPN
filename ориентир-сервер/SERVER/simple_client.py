@@ -299,7 +299,7 @@ class VPNClient:
         self.stats = {'bytes_sent': 0, 'bytes_received': 0, 'packets_sent': 0, 'packets_received': 0, 'uptime': 0}
         self.stats_lock = threading.Lock()
 
-    def connect(self):
+        def connect(self):
         logger.info(f"Connecting to {self.host}:{self.port}...")
         raw_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         raw_sock.settimeout(10)
