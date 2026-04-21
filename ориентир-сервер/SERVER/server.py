@@ -24,7 +24,8 @@ from pathlib import Path
 from collections import defaultdict
 
 # Локальный импорт после определения констант
-from anti_dpi_engine import AntiDPIEngine, PerfectForwardSecrecy, SecureNonceManager
+# СТАЛО:
+from anti_dpi_engine import AntiDPIEngine, SecureNonceManager
 
 # ============== КОНФИГУРАЦИЯ ==============
 HOST = "0.0.0.0"
@@ -67,6 +68,7 @@ class SafeLogger:
 
 logger = SafeLogger()
 
+# ============== АУТЕНТИФИКАЦИЯ ==============
 # ============== АУТЕНТИФИКАЦИЯ ==============
 class SecureAuthManager:
     def __init__(self):
@@ -119,6 +121,20 @@ class SecureAuthManager:
             if pwd == getpass.getpass("Confirm: ") and len(pwd) >= 8:
                 return pwd
             print("[!] Mismatch or too short")
+    def _recv_exact(self, sock: socket.socket, n: int) -> bytes:
+        data = b''
+        while len(data) < n:
+            try:
+                chunk = sock.recv(n - len(data))
+                if not chunk:
+                    break
+                data += chunk
+            except socket.timeout:
+                break
+            except:
+                break
+        return data
+
     
     def check_rate_limit(self, ip: str) -> bool:
         with self.lock:
@@ -136,25 +152,36 @@ class SecureAuthManager:
         original_timeout = sock.gettimeout()
         try:
             sock.settimeout(10)
-            auth_data = self._recv_exact(sock, 64)
-            if len(auth_data) < 64:
-                logger.warning(f"Incomplete auth from {client_ip}")
+            
+            # ✅ НОВЫЙ ФОРМАТ: 1 байт длины + мусор + хеш + \r\n
+            header = self._recv_exact(sock, 1)
+            if len(header) < 1:
                 self.record_failure(client_ip)
                 return False, None
-            if auth_data[62:64] != b'\r\n':
+            
+            payload_len = header[0]
+            if payload_len < 58 or payload_len > 128: # Минимум под хеш, максимум разумный
+                logger.warning(f"Invalid auth length {payload_len} from {client_ip}")
+                self.record_failure(client_ip)
+                return False, None
+                
+            auth_data = self._recv_exact(sock, payload_len)
+            if len(auth_data) < payload_len:
+                self.record_failure(client_ip)
+                return False, None
+                
+            if auth_data[-2:] != b'\r\n':
                 logger.warning(f"Invalid auth format from {client_ip}")
                 self.record_failure(client_ip)
                 return False, None
-            received_hash = auth_data[:56].decode('ascii', errors='ignore')
-            client_nonce = auth_data[56:62]
-            if not self.nonce_manager.is_valid(client_nonce):
-                logger.warning(f"Replay attack from {client_ip}")
-                self.record_failure(client_ip)
-                return False, None
+                
+            # Хэш всегда последние 56 символов перед \r\n
+            received_hash = auth_data[-58:-2].decode('ascii', errors='ignore')
+            
             expected = hashlib.sha224((self.plain_password or "mysecretpassword123").encode()).hexdigest()
             if received_hash == expected:
                 logger.info(f"[+] Client {client_ip} authenticated")
-                return True, client_nonce
+                return True, None
             logger.warning(f"[!] Auth failed for {client_ip}")
             self.record_failure(client_ip)
             return False, None
@@ -171,20 +198,7 @@ class SecureAuthManager:
                 sock.settimeout(original_timeout)
             except:
                 pass
-    
-    def _recv_exact(self, sock: socket.socket, n: int) -> bytes:
-        data = b''
-        while len(data) < n:
-            try:
-                chunk = sock.recv(n - len(data))
-                if not chunk:
-                    break
-                data += chunk
-            except socket.timeout:
-                break
-            except:
-                break
-        return data
+
 
 # ============== УПРАВЛЕНИЕ КЛИЕНТАМИ ==============
 class ClientManager:
@@ -429,11 +443,7 @@ class ClientHandler:
                 return
             
             self.anti_dpi = AntiDPIEngine(is_server=True)
-            try:
-                self.anti_dpi.perform_handshake(self.sock, self.client_ip)
-            except Exception as e:
-                logger.error(f"PFS failed: {e}")
-                return
+            # ❌ PFS ХЭНДШЕЙК УДАЛЕН
             
             self.assigned_ip = self.server.client_manager.allocate_ip()
             if not self.assigned_ip:
@@ -448,23 +458,24 @@ class ClientHandler:
             
             while self.running and self.server.running:
                 try:
-                    header = self._recv_exact(14)
+                    # ✅ Теперь читаем заголовок 2 байта, а не 14
+                    header = self._recv_exact(2)
                     if len(header) == 0:
                         break
-                    if len(header) < 14:
+                    if len(header) < 2:
                         continue
-                    length = struct.unpack('!H', header[12:14])[0]
+                    length = struct.unpack('!H', header)[0]
                     if 0 < length < 65535:
                         data = self._recv_exact(length)
                         if len(data) == length:
-                            packet = self.anti_dpi.decrypt_packet(header + data)
-                            if packet:
-                                if len(packet) == 0:
-                                    self.last_activity = time.time()
-                                    continue
-                                self.server.tun.write(packet)
-                                self.bytes_received += len(header) + length
+                            # Дешифрация больше не нужна, передаем напрямую
+                            packet = data 
+                            if len(packet) == 0:
                                 self.last_activity = time.time()
+                                continue
+                            self.server.tun.write(packet)
+                            self.bytes_received += len(header) + length
+                            self.last_activity = time.time()
                 except socket.timeout:
                     continue
                 except Exception as e:
@@ -484,6 +495,7 @@ class ClientHandler:
             while self.running and self.server.running:
                 try:
                     pkt = q.get(timeout=0.5)
+                    # Шифрование заменено на простой фрейминг
                     enc = self.anti_dpi.encrypt_packet(pkt)
                     with self.write_lock:
                         self.sock.sendall(enc)
@@ -505,7 +517,7 @@ class ClientHandler:
                     return data
                 data += chunk
             except socket.timeout:
-                return data
+                continue
             except:
                 return data
         return data
