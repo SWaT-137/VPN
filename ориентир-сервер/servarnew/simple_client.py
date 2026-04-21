@@ -1,4 +1,3 @@
-# simple_client.py
 #!/usr/bin/env python3
 """
 TROJAN + REALITY VPN CLIENT
@@ -11,36 +10,31 @@ import sys
 import ctypes
 import hashlib
 import logging
-from datetime import datetime
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305  # ИСПРАВЛЕНО: изменено с AESGCM
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from reality_engine import RealityEngine # ✅ Импортируем новый файл
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF  # ИСПРАВЛЕНО: изменено с PBKDF2HMAC
+from reality_engine import RealityEngine
 
-# ✅ ИСПРАВЛЕНО: logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-SERVER_HOST = "127.0.0.1" # Убедитесь, что это IP вашего сервера
+SERVER_HOST = "10.71.7.210"
 SERVER_PORT = 443
 PASSWORD = "mysecretpassword123"
-# Use a real domain for SNI to mimic legitimate traffic
 SNI_HOST = "www.google.com"
 TUN_NAME = "VPNClient"
 CLIENT_IP = "10.8.0.2"
 
-class CryptoEngine:
-    """Клиентский крипто-движок для Trojan-like layer"""
+
+# ИСПРАВЛЕНО: Полностью переписано для полного соответствия серверному SessionCrypto (HKDF + ChaCha20)
+class SessionCrypto:
+    """Клиентский крипто-движок (должен строго совпадать с серверным)"""
+
     def __init__(self, password: str, salt: bytes):
         self.salt = salt
-        kdf = PBKDF2HMAC(
-            algorithm=hashes.SHA256(),
-            length=32,
-            salt=salt,
-            iterations=100_000
-        )
+        kdf = HKDF(algorithm=hashes.SHA256(), length=32, salt=salt, info=b"vpn-session-2026")
         self.key = kdf.derive(password.encode())
-        self.cipher = AESGCM(self.key)
+        self.cipher = ChaCha20Poly1305(self.key)
 
     def encrypt(self, data: bytes) -> bytes:
         nonce = os.urandom(12)
@@ -50,6 +44,7 @@ class CryptoEngine:
         nonce = data[:12]
         ct = data[12:]
         return self.cipher.decrypt(nonce, ct, None)
+
 
 class WintunAsync:
     def __init__(self):
@@ -68,13 +63,19 @@ class WintunAsync:
         d.WintunCreateAdapter.restype = ctypes.c_void_p
         d.WintunCloseAdapter.argtypes = [ctypes.c_void_p]
         d.WintunCloseAdapter.restype = None
-        d.WintunReceivePacket.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
-        d.WintunSendPacket.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-        d.WintunSendPacket.restype = None
-        # ✅ ПРАВИЛЬНАЯ СИГНАТУРА ДЛЯ WintunReceivePacket - КРИТИЧЕСКИ ВАЖНО
+
+        # ИСПРАВЛЕНО: Добавлены сигнатуры
+        d.WintunAllocateSendPacket.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        d.WintunAllocateSendPacket.restype = ctypes.c_void_p
+
         d.WintunReceivePacket.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
         d.WintunReceivePacket.restype = ctypes.c_void_p
+
+        d.WintunSendPacket.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        d.WintunSendPacket.restype = None
+
         d.WintunReleaseReceivePacket.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        d.WintunReleaseReceivePacket.restype = None
 
     def create_adapter(self, name: str):
         self.handle = self.dll.WintunCreateAdapter(name, "Wintun", None)
@@ -83,7 +84,7 @@ class WintunAsync:
         logger.info(f"[+] TUN {name} created: {CLIENT_IP}")
 
     async def read(self) -> bytes:
-        size = ctypes.c_uint32(0) # ✅ Используем size, а не ptr
+        size = ctypes.c_uint32(0)
         pkt_ptr = await asyncio.to_thread(
             self.dll.WintunReceivePacket, self.handle, ctypes.byref(size)
         )
@@ -106,6 +107,7 @@ class WintunAsync:
             self.dll.WintunCloseAdapter(self.handle)
             self.handle = None
 
+
 class AsyncVPNClient:
     def __init__(self):
         self.wintun = WintunAsync()
@@ -116,20 +118,20 @@ class AsyncVPNClient:
         self.server_host = SERVER_HOST
         self.server_port = SERVER_PORT
         self.ssl_ctx = self._build_ssl_context()
-        # Initialize Reality Engine for the client
-        fixed_short_id_hex = "02a644ff08dd1e5b"  # Подставьте сюда ТОТ ЖЕ сгенерированный hex short_id, что и на сервере
+
+        fixed_short_id_hex = "02a644ff08dd1e5b"
         self.reality_engine = RealityEngine(
             short_id=bytes.fromhex(fixed_short_id_hex)
-        )
+
+        ) # Закрываем скобки RealityEngine
 
     def _build_ssl_context(self) -> ssl.SSLContext:
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
         ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-        # Use same cipher list as server for consistency
-        ctx.set_ciphers('ECDHE+AESGCM+ECDH+AESGCM:DHE+AESGCM+ECDH+AESGCM:!aNULL:!MD5:!DSS')
-        # Negotiate http/1.1 like the server
+        # ИСПРАВЛЕНО: Список шифров приведен в соответствие с сервером
+        ctx.set_ciphers('ECDHE+AESGCM:ECDH+AESGCM:DHE+AESGCM:!aNULL:!MD5:!DSS')
         ctx.set_alpn_protocols(['http/1.1'])
         return ctx
 
@@ -147,7 +149,6 @@ class AsyncVPNClient:
                 logger.error("[!] Reality handshake failed")
                 return False
 
-            # Now proceed with Trojan-like authentication flow
             # 1. Generate and send random salt (16 bytes)
             salt = os.urandom(16)
             self.writer.write(salt)
@@ -166,7 +167,8 @@ class AsyncVPNClient:
             logger.info(f"[+] Auth OK. Assigned IP: {assigned_ip}")
 
             # 4. Initialize client-side crypto with the salt
-            self.crypto = CryptoEngine(PASSWORD, salt)
+            # ИСПРАВЛЕНО: Используем SessionCrypto (совместимый с сервером)
+            self.crypto = SessionCrypto(PASSWORD, salt)
             self.wintun.create_adapter(TUN_NAME)
             self.running = True
             logger.info("[+] Client fully connected and running.")
@@ -247,10 +249,11 @@ class AsyncVPNClient:
         if self.writer:
             self.writer.close()
             try:
-                # Attempt to gracefully close the writer
-                asyncio.get_event_loop().run_until_complete(self.writer.wait_closed())
+                # ИСПРАВЛЕНО: Безопасное закрытие без вызова уже остановленного loop
+                loop = asyncio.get_running_loop()
+                loop.create_task(self.writer.wait_closed())
             except RuntimeError:
-                # Event loop might already be closed, ignore
+                # Event loop уже закрыт, просто игнорируем
                 pass
 
 def main():

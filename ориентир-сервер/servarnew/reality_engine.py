@@ -7,14 +7,14 @@ import os
 import struct
 import hashlib
 import logging
-import socket # Для inet_aton, inet_ntoa
-# ИСПРАВЛЕНО: Добавлен импорт serialization
+import socket
 from cryptography.hazmat.primitives.asymmetric import x25519
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-from cryptography.hazmat.primitives import hashes, serialization # <-- serialization добавлен здесь
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 
 logger = logging.getLogger(__name__)
+
 
 class RealityEngine:
     SHORT_ID_LEN = 8
@@ -29,7 +29,7 @@ class RealityEngine:
             self.private_key = x25519.X25519PrivateKey.from_private_bytes(private_key_bytes)
         else:
             self.private_key = x25519.X25519PrivateKey.generate()
-        # ИСПРАВЛЕНО: Используем public_bytes с Raw форматом
+
         self.public_key = self.private_key.public_key().public_bytes(
             encoding=serialization.Encoding.Raw,
             format=serialization.PublicFormat.Raw
@@ -39,12 +39,10 @@ class RealityEngine:
         self.cipher = None
         logger.info("[+] Reality engine initialized")
 
-    # --- Handshake (Reality-like) ---
     async def client_handshake(self, reader, writer) -> bool:
         """Клиент: отправляет SHORT_ID + Ephemeral PubKey, получает Server PubKey + Auth Tag"""
         try:
             client_eph = x25519.X25519PrivateKey.generate()
-            # ИСПРАВЛЕНО: Используем public_bytes с Raw форматом
             client_pub = client_eph.public_key().public_bytes(
                 encoding=serialization.Encoding.Raw,
                 format=serialization.PublicFormat.Raw
@@ -56,7 +54,6 @@ class RealityEngine:
             server_pub = response[:self.PUB_KEY_LEN]
             auth_tag = response[self.PUB_KEY_LEN:]
 
-            # ИСПРАВЛЕНО: Используем from_public_bytes
             shared = client_eph.exchange(x25519.X25519PublicKey.from_public_bytes(server_pub))
             expected_tag = hashlib.sha256(client_pub + server_pub + self.short_id).digest()
             if auth_tag != expected_tag:
@@ -81,10 +78,8 @@ class RealityEngine:
                 logger.warning("[!] Reality handshake failed: invalid short_id")
                 return False
 
-            # ИСПРАВЛЕНО: Используем from_public_bytes
             shared = self.private_key.exchange(x25519.X25519PublicKey.from_public_bytes(client_pub))
             auth_tag = hashlib.sha256(client_pub + self.public_key + self.short_id).digest()
-            # self.public_key уже в правильном формате bytes после исправления в __init__
             writer.write(self.public_key + auth_tag)
             await writer.drain()
 
@@ -102,7 +97,6 @@ class RealityEngine:
         ).derive(shared_secret)
         self.cipher = ChaCha20Poly1305(self.traffic_key)
 
-    # --- AEAD + Framing ---
     def encrypt_packet(self, data: bytes) -> bytes:
         nonce = os.urandom(self.NONCE_LEN)
         ct = self.cipher.encrypt(nonce, data, None)
@@ -121,18 +115,18 @@ class RealityEngine:
                            dest_port,
                            RealityEngine.VLESS_ADDR_IPv4,
                            socket.inet_aton(dest_ip)
-                          )
+                           )
 
     @staticmethod
     def unpack_vless_header(data: bytes):
-        if len(data) < 8: # Updated for IPv4 header size
+        if len(data) < 8:
             return None
         ver, cmd, port, addr_type = struct.unpack("!B B H B", data[:6])
         addr_ip = data[6:10]
         if addr_type == RealityEngine.VLESS_ADDR_IPv4:
             addr_str = socket.inet_ntoa(addr_ip)
         else:
-            return None # Unsupported address type for now
+            return None
         return ver, cmd, port, addr_type, addr_str
 
     @staticmethod
