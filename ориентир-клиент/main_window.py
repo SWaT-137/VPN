@@ -4,7 +4,7 @@ import json
 
 from PySide6.QtWidgets import QApplication, QWidget, QPushButton, QLabel, QLineEdit, QMenu, QVBoxLayout
 from PySide6.QtGui import QFont, QPainter, QColor, QAction, QPen, Qt
-from PySide6.QtCore import QPropertyAnimation, QEasingCurve, QRectF, Property, Signal, QPoint
+from PySide6.QtCore import QPropertyAnimation, QEasingCurve, QRectF, Property, Signal, QPoint, QTimer
 
 
 class ToggleSwitch(QWidget):
@@ -107,7 +107,7 @@ class MainWindow(QWidget):
         }
         
         QPushButton:hover {
-            background-color: rgba(255, 255, 255, 0.1);
+            background-color: rgba(255, 255, 255, 0.08);
         }
         """)
         self.button4.clicked.connect(self.show_menu)
@@ -133,8 +133,28 @@ class MainWindow(QWidget):
         self.speed_label.setFont(QFont("JetBrains Mono", 9, QFont.Weight.Medium))
         self.speed_label.setVisible(False)
 
+        #Таймер
+        self.timer_seconds = 0
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.update_timer)
+
+        self.timer_label = QLabel("Время подключения: 00:00:00", self)
+        self.timer_label.setGeometry(50, 395, 200, 20)
+        self.timer_label.setFixedSize(225, 30)
+        self.timer_label.setStyleSheet("color: white; font-size: 14px;")
+        self.timer_label.setFont(QFont("Montserrat", 14, QFont.Weight.Normal))
+        self.timer_label.setVisible(False)
+
         self.load_settings()
         self.overlay = OverlayDialog(self)
+
+    def update_timer(self):
+        self.timer_seconds += 1
+        hours = self.timer_seconds // 3600
+        minutes = (self.timer_seconds % 3600) // 60
+        seconds = self.timer_seconds % 60
+        time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        self.timer_label.setText(f"Время подключения: {time_str}")
 
     def load_settings(self):
         if os.path.exists(self.settings_file):
@@ -194,6 +214,12 @@ class MainWindow(QWidget):
             self.speed_label.setText(f"Speed: ↓ {self.speed} | ↑ {self.speed1}")
             self.speed_label.setVisible(True)
 
+            self.timer_seconds = 0
+            self.timer.start(1000)
+
+            self.timer_label.setVisible(True)
+            self.update_timer()
+
         else:
             self.status_label.setText("Отключено")
             self.status_label.setGeometry(90, 310, 200, 20)
@@ -207,21 +233,25 @@ class MainWindow(QWidget):
             self.speed_label.setStyleSheet("color: white")
             self.speed_label.setVisible(False)
 
+            self.timer_label.setVisible(False)
+            self.timer.stop()
+
+
     def show_settings_overlay(self):
         content = QWidget()
 
         content.setLayout(None)
-        content.setFixedSize(300, 500)
+        content.setFixedSize(320, 500)
 
         # Метка "Сервер"
         self.label = QLabel("Сервер:", content)
-        self.label.setGeometry(-20, 185, 100, 65)
+        self.label.setGeometry(-5, 100, 100, 65)
         self.label.setStyleSheet("color: white; font-size: 14px; font-weight: bold;")
 
         # Поле для ввода сервера
         self.server_edit = QLineEdit(content)
         self.server_edit.setFixedSize(200, 35)
-        self.server_edit.setGeometry(70, 200, 200, 20)
+        self.server_edit.setGeometry(85, 115, 200, 20)
         self.server_edit.setText(self.server)
         self.server_edit.setPlaceholderText("Введите адрес сервера")
         self.server_edit.setStyleSheet("""
@@ -234,13 +264,13 @@ class MainWindow(QWidget):
 
         # Метка "Порт"
         self.label2 = QLabel("Порт:", content)
-        self.label2.setGeometry(-20, 235, 100, 65)
+        self.label2.setGeometry(-5, 150, 100, 65)
         self.label2.setStyleSheet("color: white; font-size: 14px; font-weight: bold;")
 
         # Поле для ввода порта
         self.port_edit = QLineEdit(content)
         self.port_edit.setFixedSize(200, 35)
-        self.port_edit.setGeometry(70, 250, 200, 20)
+        self.port_edit.setGeometry(85, 165, 200, 20)
         self.port_edit.setPlaceholderText("По умолчанию 443")
         self.port_edit.setStyleSheet("""
             background-color: #404040;
@@ -252,13 +282,13 @@ class MainWindow(QWidget):
 
         # Метка "Пароль"
         self.label3 = QLabel("Пароль:", content)
-        self.label3.setGeometry(-20, 285, 100, 65)
+        self.label3.setGeometry(-5, 200, 100, 65)
         self.label3.setStyleSheet("color: white; font-size: 14px; font-weight: bold;")
 
         # Поле для ввода пароля
         self.password_edit = QLineEdit(content)
         self.password_edit.setFixedSize(200, 35)
-        self.password_edit.setGeometry(70, 300, 200, 20)
+        self.password_edit.setGeometry(85, 215, 200, 20)
         self.password_edit.setText(self.password)
         self.password_edit.setPlaceholderText("Введите пароль")
         self.password_edit.setStyleSheet("""
@@ -272,7 +302,7 @@ class MainWindow(QWidget):
 
         self.save_button = QPushButton(content)
         self.save_button.setText("Сохранить")
-        self.save_button.setGeometry(100, 325, 20, 10)
+        self.save_button.setGeometry(100, 275, 20, 10)
         self.save_button.setFixedSize(100, 50)
         self.save_button.setStyleSheet("""
             background-color: #4CAF50;
@@ -285,16 +315,20 @@ class MainWindow(QWidget):
         self.save_button.clicked.connect(self.save_dialog_settings)
 
         self.cancel_button = QPushButton(content)
-        self.cancel_button.setText("Отмена")
-        self.cancel_button.setGeometry(100, 400, 20, 10)
-        self.cancel_button.setFixedSize(100, 50)
+        self.cancel_button.setText("←")
+        self.cancel_button.setGeometry(1, 5, 20, 10)
+        self.cancel_button.setFixedSize(40, 20)
         self.cancel_button.setStyleSheet("""
-            background-color: #f44336;
+        QPushButton {
+            background-color: transparent;
             color: white;
-            border: none;
-            border-radius: 5px;
-            padding: 5px;
-            font-weight: bold;
+            padding: 0px;
+            padding-top: -3px;
+            font-size: 30px;
+        }
+        QPushButton:hover {
+            background-color: rgba(255, 255, 255, 0.05);
+        }
         """)
         self.cancel_button.clicked.connect(self.overlay.hide_overlay)
 
@@ -307,7 +341,13 @@ class MainWindow(QWidget):
     def show_stats_overlay(self):
         content = QWidget()
 
+        content.setLayout(None)
+        content.setFixedSize(300, 500)
+
         trafic_label = QLabel(f"Всего использовано: {self.traficZnachenie} {self.Format}", content)
+        trafic_label.setAlignment(Qt.AlignCenter)
+        trafic_label.setGeometry(2, 115, 20, 10)
+        trafic_label.setFixedSize(300, 70)
         trafic_label.setStyleSheet("""
             color: white;
             font-size: 14px;
@@ -318,6 +358,9 @@ class MainWindow(QWidget):
         """)
 
         speed_label = QLabel(f"Средняя скорость: {self.spedZnachenie} {self.FormatSped}", content)
+        speed_label.setAlignment(Qt.AlignCenter)
+        speed_label.setGeometry(2, 195, 20, 10)
+        speed_label.setFixedSize(300, 70)
         speed_label.setStyleSheet("""
             color: white;
             font-size: 14px;
@@ -327,7 +370,10 @@ class MainWindow(QWidget):
             border-radius: 8px;
         """)
 
-        connection_label = QLabel(f"Количество подключений за 24 часа: {self.podklZnach} раз", content)
+        connection_label = QLabel(f"Количество подключений за 24 часа: {self.podklZnach}\nраз", content)
+        connection_label.setAlignment(Qt.AlignCenter)
+        connection_label.setGeometry(2, 275, 20, 10)
+        connection_label.setFixedSize(300, 70)
         connection_label.setStyleSheet("""
             color: white;
             font-size: 14px;
@@ -337,22 +383,22 @@ class MainWindow(QWidget):
             border-radius: 8px;
         """)
 
-        exit_button = QPushButton("Выход",content)
+        exit_button = QPushButton("←",content)
+        exit_button.setGeometry(1, 5, 20, 10)
+        exit_button.setFixedSize(40, 20)
         exit_button.setStyleSheet("""
-            background-color: #f44336;
+        QPushButton {
+            background-color: transparent;
             color: white;
-            border: none;
-            border-radius: 5px;
-            padding: 8px;
-            font-weight: bold;
+            padding: 0px;
+            padding-top: -3px;
+            font-size: 30px;
+        }
+        QPushButton:hover {
+            background-color: rgba(255, 255, 255, 0.05);
+        }
         """)
         exit_button.clicked.connect(self.overlay.hide_overlay)
-
-        layout = QVBoxLayout(content)
-        layout.addWidget(trafic_label)
-        layout.addWidget(speed_label)
-        layout.addWidget(connection_label)
-        layout.addWidget(exit_button)
 
         self.overlay.show_with_content(content)
 
@@ -401,7 +447,7 @@ class OverlayDialog(QWidget):
         border-radius: 10px;
         padding: 20px;
         """)
-        self.container.setFixedWidth(280)
+        self.container.setFixedWidth(320)
 
         self.container_layout = QVBoxLayout()
         self.container.setLayout(self.container_layout)
