@@ -26,7 +26,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 
 # ============== КОНФИГУРАЦИЯ ==============
-SERVER_HOST = "127.0.0.1"
+SERVER_HOST = "10.71.7.210"
 SERVER_PORT = 443
 TUN_ADAPTER_NAME = "VPNClient"
 VPN_SERVER_IP = "10.8.0.1"
