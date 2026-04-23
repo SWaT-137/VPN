@@ -344,12 +344,12 @@ class MainWindow(QWidget):
         content.setLayout(None)
         content.setFixedSize(300, 500)
 
-        trafic_label = QLabel(f"Всего использовано: {self.traficZnachenie} {self.Format}", content)
-        trafic_label.setAlignment(Qt.AlignCenter)
-        trafic_label.setGeometry(2, 115, 20, 10)
-        trafic_label.setFixedSize(300, 70)
-        trafic_label.setStyleSheet("""
-            color: white;
+        self.trafic_label = QLabel(f"Всего использовано: ... {self.Format}", content)
+        self.trafic_label.setAlignment(Qt.AlignCenter)
+        self.trafic_label.setGeometry(2, 115, 20, 10)
+        self.trafic_label.setFixedSize(300, 70)
+        self.trafic_label.setStyleSheet("""
+            color: #888888;
             font-size: 14px;
             margin: 5px;
             padding: 10px;
@@ -357,12 +357,12 @@ class MainWindow(QWidget):
             border-radius: 8px;
         """)
 
-        speed_label = QLabel(f"Средняя скорость: {self.spedZnachenie} {self.FormatSped}", content)
-        speed_label.setAlignment(Qt.AlignCenter)
-        speed_label.setGeometry(2, 195, 20, 10)
-        speed_label.setFixedSize(300, 70)
-        speed_label.setStyleSheet("""
-            color: white;
+        self.speed_label = QLabel(f"Средняя скорость: ... {self.FormatSped}", content)
+        self.speed_label.setAlignment(Qt.AlignCenter)
+        self.speed_label.setGeometry(2, 195, 20, 10)
+        self.speed_label.setFixedSize(300, 70)
+        self.speed_label.setStyleSheet("""
+            color: #888888;
             font-size: 14px;
             margin: 5px;
             padding: 10px;
@@ -370,12 +370,12 @@ class MainWindow(QWidget):
             border-radius: 8px;
         """)
 
-        connection_label = QLabel(f"Количество подключений за 24 часа: {self.podklZnach}\nраз", content)
-        connection_label.setAlignment(Qt.AlignCenter)
-        connection_label.setGeometry(2, 275, 20, 10)
-        connection_label.setFixedSize(300, 70)
-        connection_label.setStyleSheet("""
-            color: white;
+        self.connection_label = QLabel(f"Количество подключений за 24 часа: ... \nраз", content)
+        self.connection_label.setAlignment(Qt.AlignCenter)
+        self.connection_label.setGeometry(2, 275, 20, 10)
+        self.connection_label.setFixedSize(300, 70)
+        self.connection_label.setStyleSheet("""
+            color: #888888;
             font-size: 14px;
             margin: 5px;
             padding: 10px;
@@ -401,6 +401,21 @@ class MainWindow(QWidget):
         exit_button.clicked.connect(self.overlay.hide_overlay)
 
         self.overlay.show_with_content(content)
+
+        QTimer.singleShot(1500, self.load_stats)
+
+    def load_stats(self):
+        if hasattr(self, 'trafic_label') and self.trafic_label:
+            self.trafic_label.setText(f"Всего использовано: {self.traficZnachenie} {self.Format}")
+            self.trafic_label.setStyleSheet(self.trafic_label.styleSheet().replace("color: #888888;", "color: white;"))
+
+        if hasattr(self, 'speed_label') and self.speed_label:
+            self.speed_label.setText(f"Средняя скорость: {self.spedZnachenie} {self.FormatSped}")
+            self.speed_label.setStyleSheet(self.speed_label.styleSheet().replace("color: #888888;", "color: white;"))
+
+        if hasattr(self, 'connection_label') and self.connection_label:
+            self.connection_label.setText(f"Количество подключений за 24 часа: {self.podklZnach}\nраз")
+            self.connection_label.setStyleSheet(self.connection_label.styleSheet().replace("color: #888888;", "color: white;"))
 
     def show_menu(self):
         menu = QMenu(self)
