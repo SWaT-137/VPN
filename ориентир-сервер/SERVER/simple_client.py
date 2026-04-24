@@ -2,6 +2,7 @@
 """
 VPN Client 2026 - Trojan Protocol (Self-Signed Adaptation)
 Radmin-style VPN: Виртуальная локалка + выход в интернет
+Безопасная аутентификация по хэшу (SHA-256)
 """
 import socket
 import ssl
@@ -26,7 +27,7 @@ SERVER_HOST = "127.0.0.1" # IP вашего сервера
 SERVER_PORT = 1443
 TUN_ADAPTER_NAME = "VPNClient"
 CONFIG_DIR = Path("vpn_client_config")
-PASSWORD_FILE = CONFIG_DIR / "client_password.txt"
+PASSWORD_FILE = CONFIG_DIR / "client_hash.txt" # Переименовал файл логично
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -34,13 +35,32 @@ logger = logging.getLogger(__name__)
 # ============== УПРАВЛЕНИЕ УЧЕТНЫМИ ДАННЫМИ ==============
 class CredentialManager:
     def __init__(self):
-        self.password: Optional[str] = None
+        self.password_hash: Optional[str] = None
         CONFIG_DIR.mkdir(exist_ok=True)
+        
         if PASSWORD_FILE.exists():
-            with open(PASSWORD_FILE, 'r') as f: self.password = f.read().strip()
-        else:
-            self.password = "mysecretpassword123" # Должен совпадать с серверным
-            with open(PASSWORD_FILE, 'w') as f: f.write(self.password)
+            with open(PASSWORD_FILE, 'r') as f: 
+                self.password_hash = f.read().strip()
+            if len(self.password_hash) == 64:
+                return
+        
+        # Если файла нет или хэш битый, просим вставить хэш
+        print("\n" + "="*65)
+        print("  ВСТАВЬТЕ ХЭШ, КОТОРЫЙ ДАЛ ВАМ АДМИНИСТРАТОР СЕРВЕРА:")
+        print("="*65)
+        while True:
+            h = input("Хэш: ").strip()
+            if len(h) == 64:
+                try: int(h, 16) # Проверяем, что это реально hex число
+                except ValueError: 
+                    print("[!] Это не похоже на SHA-256 хэш. Попробуйте снова.")
+                    continue
+                self.password_hash = h
+                with open(PASSWORD_FILE, 'w') as f: f.write(self.password_hash)
+                logger.info("[+] Hash saved to config")
+                break
+            else:
+                print("[!] Длина хэша должна быть ровно 64 символа.")
 
 # ============== WINTUN ОБЕРТКА ==============
 class WintunWrapper:
@@ -51,7 +71,6 @@ class WintunWrapper:
         self.WintunCreateAdapter = self.dll.WintunCreateAdapter; self.WintunCreateAdapter.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_wchar_p]; self.WintunCreateAdapter.restype = ctypes.c_void_p
         self.WintunOpenAdapter = self.dll.WintunOpenAdapter; self.WintunOpenAdapter.argtypes = [ctypes.c_wchar_p]; self.WintunOpenAdapter.restype = ctypes.c_void_p
         self.WintunCloseAdapter = self.dll.WintunCloseAdapter; self.WintunCloseAdapter.argtypes = [ctypes.c_void_p]; self.WintunCloseAdapter.restype = None
-        # ИСПРАВЛЕНИЕ: WintunStartSession принимает 2 аргумента, а не 3!
         self.WintunStartSession = self.dll.WintunStartSession; self.WintunStartSession.argtypes = [ctypes.c_void_p, ctypes.c_uint32]; self.WintunStartSession.restype = ctypes.c_void_p
         self.WintunEndSession = self.dll.WintunEndSession; self.WintunEndSession.argtypes = [ctypes.c_void_p]; self.WintunEndSession.restype = None
         self.WintunGetReadWaitEvent = self.dll.WintunGetReadWaitEvent; self.WintunGetReadWaitEvent.argtypes = [ctypes.c_void_p]; self.WintunGetReadWaitEvent.restype = ctypes.c_void_p
@@ -75,28 +94,16 @@ class TunInterface:
 
     def set_ip(self, ip: str, server_host: str):
         import subprocess
-        # 1. Устанавливаем IP адрес на виртуальный адаптер
         subprocess.run(f'netsh interface ipv4 delete address "{self.name}"', shell=True, capture_output=True)
         subprocess.run(f'netsh interface ipv4 set address "{self.name}" {ip} 255.255.255.0', shell=True, capture_output=True)
         
-        # Определяем, локальное ли это подключение
         is_local_test = server_host in ['127.0.0.1', 'localhost']
 
         if is_local_test:
-            # ==========================================
-            # РЕЖИМ ЛОКАЛЬНОГО ТЕСТИРОВАНИЯ (НА ОДНОМ ПК)
-            # ==========================================
-            logger.info("[*] Localhost detected. Routing ONLY VPN subnet (Split Tunnel).")
-            # Добавляем маршрут ТОЛЬКО для виртуальной сети 10.8.0.x
+            logger.info("[*] Localhost detected. Routing ONLY VPN subnet.")
             subprocess.run(f'netsh interface ipv4 add route 10.8.0.0/24 "{self.name}" metric=10', shell=True, capture_output=True)
-            
         else:
-            # ==========================================
-            # РЕЖИМ РЕАЛЬНОГО ВПН (РАЗНЫЕ ПК / ИНТЕРНЕТ)
-            # ==========================================
-            logger.info("[*] Remote server detected. Routing ALL traffic + DNS (Full Tunnel).")
-            
-            # Защита от петли: ищем шлюз физической сетевой карты
+            logger.info("[*] Remote server detected. Routing ALL traffic (Full Tunnel).")
             gateway = None
             result = subprocess.run('route print -4 0.0.0.0', shell=True, capture_output=True, text=True)
             for line in result.stdout.splitlines():
@@ -105,16 +112,10 @@ class TunInterface:
                     if len(parts) >= 3 and parts[2] != '0.0.0.0':
                         gateway = parts[2]
                         break
-            
-            # Жестко прописываем маршрут к серверу через реальный шлюз
             if gateway:
                 subprocess.run(f'route add {server_host} mask 255.255.255.255 {gateway}', shell=True, capture_output=True)
-                logger.info(f"[*] Added host route to server {server_host} via {gateway}")
-
-            # Перенаправляем ВЕСЬ трафик через VPN
+                logger.info(f"[*] Host route to server added via {gateway}")
             subprocess.run(f'netsh interface ipv4 add route 0.0.0.0/0 "{self.name}" metric=10', shell=True, capture_output=True)
-            
-            # Принудительно ставим DNS Google, чтобы сайты резолвились через VPN
             subprocess.run(f'netsh interface ipv4 set dns "{self.name}" static 8.8.8.8', shell=True, capture_output=True)
             logger.info(f"[+] Default route and DNS redirected to VPN")
 
@@ -170,18 +171,16 @@ class VPNClient:
             self.sock = self.anti_dpi.wrap_socket(raw_sock)
             self.sock.settimeout(30.0)
             
-            # 1. Строгий хэндшейк Trojan (60 байт)
-            password_hash = hashlib.sha224(self.cred_manager.password.encode()).hexdigest()
-            trojan_handshake = b'\r\n' + password_hash.encode('ascii') + b'\r\n'
+            # Формируем хэндшейк Trojan (68 байт под SHA-256)
+            # Мы больше НИЧЕГО не хэшируем, просто отправляем хэш как есть
+            trojan_handshake = b'\r\n' + self.cred_manager.password_hash.encode('ascii') + b'\r\n'
             self.sock.sendall(trojan_handshake)
             
-            # 2. Получение IP
             header = self._recv_exact(2)
             if len(header) < 2: raise ConnectionError("Failed to receive IP header")
             length = struct.unpack('!H', header)[0]
             self.assigned_ip = self._recv_exact(length).decode()
             
-            # 3. Настройка TUN и маршрутизации (ПЕРЕДАЕМ self.host ДЛЯ ЗАЩИТЫ ОТ ПЕТЛИ)
             self.tun = TunInterface()
             self.tun.create()
             self.tun.set_ip(self.assigned_ip, self.host)
@@ -208,12 +207,10 @@ class VPNClient:
             packet = self.tun.read(timeout=0.05)
             if packet:
                 try:
-                    # Фрейминг с паддингом: [2 байта длина][4 байта длина IP][IP пакет][Мусор]
                     pad_len = secrets.randbelow(32)
                     padding = secrets.token_bytes(pad_len)
                     payload = struct.pack('!I', len(packet)) + packet + padding
                     frame = struct.pack('!H', len(payload)) + payload
-                    
                     self.sock.sendall(frame)
                     with self.stats_lock: self.stats['tx'] += len(frame)
                 except: break
@@ -227,7 +224,6 @@ class VPNClient:
                 if 0 < length < 65535:
                     data = self._recv_exact(length)
                     if not data or len(data) != length: break
-                    
                     if len(data) >= 4:
                         real_pkt_len = struct.unpack('!I', data[:4])[0]
                         if real_pkt_len > 0 and real_pkt_len <= len(data) - 4:
