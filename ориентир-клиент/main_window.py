@@ -98,7 +98,8 @@ class MainWindow(QWidget):
         self.button4 = QPushButton("⋮", self)
         self.button4.setGeometry(285, 0, 10, 30)
         self.button4.setFixedSize(15, 40)
-        self.button4.setFont(QFont("Montserrat", 30))
+        self.button4.setStyleSheet("color: #A0A0B0;")
+        self.button4.setFont(QFont("Inter", 30))
         self.button4.setStyleSheet("""
         QPushButton {
             background-color: transparent;
@@ -117,20 +118,22 @@ class MainWindow(QWidget):
         self.status_label.setGeometry(90, 310, 200, 20)
         self.status_label.setFixedSize(225, 30)
         self.status_label.setStyleSheet("color: white; font-size: 20px; ")
-        self.status_label.setFont(QFont("Montserrat", 30, QFont.Weight.Medium))
+        self.status_label.setFont(QFont("Inter", 30, QFont.Weight.Medium))
 
         # Пинг
         self.ping_label = QLabel("Ping: ", self)
         self.ping_label.setGeometry(115, 335, 200, 20)
         self.ping_label.setFixedSize(225, 35)
-        self.ping_label.setFont(QFont("JetBrains Mono", 9, QFont.Weight.Medium))
+        self.ping_label.setStyleSheet("color: #A0A0B0;")
+        self.ping_label.setFont(QFont("JetBrains Mono", 12, QFont.Weight.Medium))
         self.ping_label.setVisible(False)
 
         # Скорость
         self.speed_label = QLabel("Speed: ", self)
         self.speed_label.setGeometry(95, 365, 200, 20)
         self.speed_label.setFixedSize(150, 20)
-        self.speed_label.setFont(QFont("JetBrains Mono", 9, QFont.Weight.Medium))
+        self.speed_label.setStyleSheet("color: #A0A0B0;")
+        self.speed_label.setFont(QFont("JetBrains Mono", 12, QFont.Weight.Medium))
         self.speed_label.setVisible(False)
 
         #Таймер
@@ -139,10 +142,10 @@ class MainWindow(QWidget):
         self.timer.timeout.connect(self.update_timer)
 
         self.timer_label = QLabel("Время подключения: 00:00:00", self)
-        self.timer_label.setGeometry(50, 395, 200, 20)
-        self.timer_label.setFixedSize(225, 30)
-        self.timer_label.setStyleSheet("color: white; font-size: 14px;")
-        self.timer_label.setFont(QFont("Montserrat", 14, QFont.Weight.Normal))
+        self.timer_label.setGeometry(40, 385, 200, 20)
+        self.timer_label.setFixedSize(235, 40)
+        self.timer_label.setStyleSheet("color: #A0A0B0;")
+        self.timer_label.setFont(QFont("Inter", 11, QFont.Weight.Medium))
         self.timer_label.setVisible(False)
 
         self.load_settings()
@@ -226,11 +229,11 @@ class MainWindow(QWidget):
             self.status_label.setStyleSheet("color: white; font-size: 20px;")
 
             self.ping_label.setText(f"Ping:")
-            self.ping_label.setStyleSheet("color: white")
+            self.ping_label.setStyleSheet("color: #A0A0B0")
             self.ping_label.setVisible(False)
 
             self.speed_label.setText(f"Speed:")
-            self.speed_label.setStyleSheet("color: white")
+            self.speed_label.setStyleSheet("color: #A0A0B0")
             self.speed_label.setVisible(False)
 
             self.timer_label.setVisible(False)
@@ -256,7 +259,7 @@ class MainWindow(QWidget):
         self.server_edit.setPlaceholderText("Введите адрес сервера")
         self.server_edit.setStyleSheet("""
             background-color: #404040;
-            color: white;
+            color: #A0A0B0;
             border-radius: 5px;
             border: 1px solid #555555;
             padding: 2px;
@@ -274,7 +277,7 @@ class MainWindow(QWidget):
         self.port_edit.setPlaceholderText("По умолчанию 443")
         self.port_edit.setStyleSheet("""
             background-color: #404040;
-            color: white;
+            color: #A0A0B0;
             border-radius: 5px;
             border: 1px solid #555555;
             padding: 2px;
@@ -293,7 +296,7 @@ class MainWindow(QWidget):
         self.password_edit.setPlaceholderText("Введите пароль")
         self.password_edit.setStyleSheet("""
             background-color: #404040;
-            color: white;
+            color: #A0A0B0;
             border-radius: 5px;
             border: 1px solid #555555;
             padding: 2px;
@@ -431,7 +434,7 @@ class MainWindow(QWidget):
         menu.setStyleSheet("""
             QMenu::item:selected {
                 background-color: rgba(255, 255, 255, 0.1);
-                color: white;
+                color: #A0A0B0;
             }
         """)
 
