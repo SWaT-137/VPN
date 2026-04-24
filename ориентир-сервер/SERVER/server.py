@@ -2,6 +2,7 @@
 """
 VPN Server 2026 - Trojan Protocol (Self-Signed Adaptation)
 Radmin-style VPN: Виртуальная локалка + выход в интернет (NAT)
+Безопасная аутентификация по хэшу (SHA-256)
 """
 import socket
 import ssl
@@ -19,6 +20,7 @@ import signal
 import ipaddress
 import queue
 import subprocess
+import getpass # Добавлено для скрытого ввода пароля
 from ctypes import wintypes
 from datetime import datetime
 from typing import Optional, Dict, Set, List, Tuple
@@ -48,40 +50,26 @@ logger = logging.getLogger(__name__)
 def setup_server_nat():
     """Включает IP Forwarding и настраивает NAT для выхода клиентов в интернет"""
     logger.info("[*] Configuring Internet Sharing (NAT)...")
-    
-    # 1. Включаем форвардинг пакетов в реестре Windows
     try:
-        subprocess.run(
-            'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters" /v IPEnableRouter /t REG_DWORD /d 1 /f',
-            shell=True, capture_output=True, check=True
-        )
+        subprocess.run('reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters" /v IPEnableRouter /t REG_DWORD /d 1 /f', shell=True, capture_output=True, check=True)
     except Exception as e:
         logger.error(f"Failed to enable IP forwarding: {e}")
         return False
 
-    # 2. Настраиваем NAT через PowerShell (работает на Windows 10/11 Pro/Enterprise)
-    # Удаляем старый NAT если он был
     subprocess.run('powershell -Command "Remove-NetNat -Name VpnNat -Confirm:$false -ErrorAction SilentlyContinue"', shell=True, capture_output=True)
-    
-    # Создаем новый NAT для нашей подсети 10.8.0.0/24
-    result = subprocess.run(
-        'powershell -Command "New-NetNat -Name VpnNat -InternalIPInterfaceAddressPrefix 10.8.0.0/24"',
-        shell=True, capture_output=True, text=True
-    )
+    result = subprocess.run('powershell -Command "New-NetNat -Name VpnNat -InternalIPInterfaceAddressPrefix 10.8.0.0/24"', shell=True, capture_output=True, text=True)
     
     if result.returncode == 0:
-        logger.info("[+] NAT successfully configured! Clients have internet access.")
+        logger.info("[+] NAT successfully configured!")
         return True
     else:
-        logger.warning(f"[-] NAT setup failed (Clients will only see VPN LAN): {result.stderr.strip()}")
+        logger.warning(f"[-] NAT setup failed: {result.stderr.strip()}")
         return False
 
 # ============== АУТЕНТИФИКАЦИЯ ==============
 class SecureAuthManager:
     def __init__(self):
         self.password_hash: Optional[str] = None
-        self.salt: Optional[bytes] = None
-        self.plain_password: Optional[str] = None
         self.failed_attempts: Dict[str, List[float]] = defaultdict(list)
         self.lock = threading.RLock()
         self._load_or_create_credentials()
@@ -92,19 +80,31 @@ class SecureAuthManager:
                 with open(PASSWORD_FILE, 'r') as f:
                     data = json.loads(f.read().strip())
                     self.password_hash = data.get('password_hash')
-                    self.salt = bytes.fromhex(data.get('salt', ''))
-                    self.plain_password = data.get('plain_password', 'mysecretpassword123')
-                    logger.info("[+] Credentials loaded")
-                    return
+                    if self.password_hash and len(self.password_hash) == 64:
+                        logger.info("[+] Credentials loaded")
+                        return
         except Exception: pass
         
-        logger.info("[*] Creating new credentials...")
-        password = "mysecretpassword123" # По умолчанию, поменяйте при первом запуске
-        self.plain_password = password
-        self.salt = secrets.token_bytes(32)
-        self.password_hash = hashlib.sha256(password.encode() + self.salt).hexdigest()
+        logger.info("[*] First run! Setting up VPN Password...")
+        while True:
+            pwd = getpass.getpass("Введите пароль для VPN сервера: ")
+            pwd2 = getpass.getpass("Повторите пароль: ")
+            if pwd == pwd2 and len(pwd) >= 4:
+                break
+            print("[!] Пароли не совпадают или слишком короткий (мин. 4 символа).")
+
+        # Улучшенное шифрование: используем SHA-256 (64 символа)
+        self.password_hash = hashlib.sha256(pwd.encode()).hexdigest()
+        
+        # Сохраняем ТОЛЬКО хэш! Сам пароль не пишем на диск.
         with open(PASSWORD_FILE, 'w') as f:
-            json.dump({'password_hash': self.password_hash, 'salt': self.salt.hex(), 'plain_password': password}, f)
+            json.dump({'password_hash': self.password_hash}, f)
+        
+        # Красивый вывод в консоль, чтобы админ мог скопировать
+        logger.warning("\n" + "="*65)
+        logger.warning("  СКОПИРУЙТЕ ЭТОТ ХЭШ И ОТДАЙТЕ ДРУГУ ДЛЯ ПОДКЛЮЧЕНИЯ:")
+        logger.warning(f"  {self.password_hash}")
+        logger.warning("="*65 + "\n")
 
     def _recv_exact(self, sock: socket.socket, n: int) -> bytes:
         data = b''
@@ -129,26 +129,25 @@ class SecureAuthManager:
         try:
             sock.settimeout(10)
             
-            # Строгий формат Trojan: 60 байт
-            handshake = self._recv_exact(sock, 60)
-            if len(handshake) != 60:
+            # Новый формат Trojan под SHA-256: 68 байт (\r\n + 64 символа хэша + \r\n)
+            handshake = self._recv_exact(sock, 68)
+            if len(handshake) != 68:
                 self.record_failure(client_ip)
                 return False
                 
-            # Проверка границ CRLF
-            if handshake[0:2] != b'\r\n' or handshake[58:60] != b'\r\n':
+            if handshake[0:2] != b'\r\n' or handshake[66:68] != b'\r\n':
                 logger.warning(f"Invalid Trojan format from {client_ip}")
                 self.record_failure(client_ip)
                 return False
                 
-            received_hash = handshake[2:58].decode('ascii', errors='ignore')
-            expected = hashlib.sha224((self.plain_password).encode()).hexdigest()
+            received_hash = handshake[2:66].decode('ascii', errors='ignore')
             
-            if received_hash == expected:
-                logger.info(f"[+] Client {client_ip} authenticated via Trojan")
+            # Клиент присылает готовый хэш, мы просто сравниваем
+            if received_hash == self.password_hash:
+                logger.info(f"[+] Client {client_ip} authenticated via Hash")
                 return True
                 
-            logger.warning(f"[!] Auth failed for {client_ip}")
+            logger.warning(f"[!] Auth failed for {client_ip} (invalid hash)")
             self.record_failure(client_ip)
             return False
         except Exception as e:
@@ -274,7 +273,6 @@ def generate_ssl_certificate():
     
     logger.info(f"[*] Generating Self-Signed Cert for {SNI_DOMAIN}...")
     key = rsa.generate_private_key(65537, 2048)
-    # ВАЖНО: CN и SAN совпадают с SNI из anti_dpi_engine.py!
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, SNI_DOMAIN)])
     cert = x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key()).serial_number(x509.random_serial_number()).not_valid_before(datetime.datetime.now(datetime.timezone.utc)).not_valid_after(datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(days=3650)).add_extension(x509.SubjectAlternativeName([x509.DNSName(SNI_DOMAIN)]), False).sign(key, hashes.SHA256())
     
@@ -296,7 +294,6 @@ class ClientHandler:
             self.assigned_ip = self.server.client_manager.allocate_ip()
             if not self.assigned_ip: return
             
-            # Отправляем IP (простой фрейм)
             self.sock.sendall(struct.pack('!H', len(self.assigned_ip)) + self.assigned_ip.encode())
             self.server.client_manager.add_client(self.assigned_ip, self, self.sock)
             logger.info(f"[+] {self.addr} -> {self.assigned_ip}")
@@ -311,11 +308,8 @@ class ClientHandler:
                     if 0 < length < 65535:
                         data = self._recv_exact(length)
                         if not data or len(data) != length: break
-                        
-                        # Извлекаем реальную длину IP-пакета из наших 4 байт
                         if len(data) < 4: continue
                         real_pkt_len = struct.unpack('!I', data[:4])[0]
-                        
                         if real_pkt_len > 0 and real_pkt_len <= len(data) - 4:
                             packet = data[4:4+real_pkt_len]
                             self.server.tun.write(packet)
@@ -331,12 +325,10 @@ class ClientHandler:
         try:
             while self.running and self.server.running:
                 pkt = q.get(timeout=0.5)
-                # Фрейминг: [2 байта общая длина][4 байта длина IP пакета][IP пакет][Рандомный паддинг]
-                pad_len = secrets.randbelow(32) # 0-31 байт мусора против фингерпринтинга
+                pad_len = secrets.randbelow(32)
                 padding = secrets.token_bytes(pad_len)
                 payload = struct.pack('!I', len(pkt)) + pkt + padding
                 frame = struct.pack('!H', len(payload)) + payload
-                
                 with self.write_lock: self.sock.sendall(frame)
         except: pass
         finally:
@@ -375,8 +367,6 @@ class VPNServer:
         self.client_manager = ClientManager(); self.send_queues = {}; self.send_queues_lock = threading.RLock()
         
         generate_ssl_certificate()
-        
-        # ВКЛЮЧАЕМ NAT ДЛЯ ВЫХОДА В ИНТЕРНЕТ
         setup_server_nat()
         
         self.tun = TUNInterface(TUN_NAME, VPN_SERVER_IP, VPN_NETMASK)
@@ -404,39 +394,26 @@ class VPNServer:
             while self.running:
                 try:
                     sock.settimeout(1.0)
-                    c, a = sock.accept()  # Принимаем обычный сокет
-                    
+                    c, a = sock.accept()
                     try:
                         ssl_conn = ctx.wrap_socket(c, server_side=True, do_handshake_on_connect=True)
                     except Exception as e:
                         logger.warning(f"SSL handshake failed: {e}")
                         c.close()
                         continue
-                    
                     threading.Thread(target=ClientHandler(ssl_conn, a, self).run, daemon=True).start()
-                except socket.timeout: 
-                    continue
-                except Exception as e:
-                    logger.error(f"Accept error: {e}")
-                    continue
-        except Exception as e: 
-            logger.error(f"Listen error: {e}")
+                except socket.timeout: continue
+                except Exception as e: logger.error(f"Accept error: {e}")
+        except Exception as e: logger.error(f"Listen error: {e}")
 
-    
     def _tun_reader(self):
-        # Читает пакеты из виртуалки (от клиента или от NAT в ответ на интернет-запрос)
         while self.running:
             pkt = self.tun.read(0.1)
             if pkt and len(pkt) >= 20:
                 try:
                     dst_ip = socket.inet_ntoa(pkt[16:20])
-                    
-                    # Если пакет предназначен другому клиенту виртуалки (10.8.0.x)
                     c = self.client_manager.get_client(dst_ip)
-                    if c and c['handler']: 
-                        c['handler'].send_packet(pkt)
-                    # Иначе это интернет-трафик (NAT сам отправит его через физ. интерфейс сервера)
-                    # Пакеты от интернета обратно клиенту вернутся сюда через NAT с dst_ip = 10.8.0.x
+                    if c and c['handler']: c['handler'].send_packet(pkt)
                 except: pass
     
     def stop(self):
