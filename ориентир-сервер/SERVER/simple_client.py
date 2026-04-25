@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-VPN Client 2026 - Trojan Protocol (Self-Signed Adaptation)
-Radmin-style VPN: Виртуальная локалка + выход в интернет
-Безопасная аутентификация по хэшу (SHA-256)
+VPN Client 2026 - Trojan Protocol
+E2E ENCRYPTION + Мгновенное обнаружение отключения сервера
 """
 import socket
 import ssl
@@ -20,49 +19,43 @@ import queue
 from typing import Optional
 from pathlib import Path
 
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from anti_dpi_engine import AntiDPIEngine
 
 # ============== КОНФИГУРАЦИЯ ==============
-SERVER_HOST = "127.0.0.1" # IP вашего сервера
+SERVER_HOST = "127.0.0.1" 
 SERVER_PORT = 1443
 TUN_ADAPTER_NAME = "VPNClient"
 CONFIG_DIR = Path("vpn_client_config")
-PASSWORD_FILE = CONFIG_DIR / "client_hash.txt" # Переименовал файл логично
+TOKEN_FILE = CONFIG_DIR / "client_token.txt"
+
+FLAG_RAW_INTERNET = 0x00
+FLAG_E2E_LAN = 0x01
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# ============== УПРАВЛЕНИЕ УЧЕТНЫМИ ДАННЫМИ ==============
+# ============== УПРАВЛЕНИЕ ТОКЕНОМ ==============
 class CredentialManager:
     def __init__(self):
-        self.password_hash: Optional[str] = None
+        self.token: Optional[str] = None
         CONFIG_DIR.mkdir(exist_ok=True)
-        
-        if PASSWORD_FILE.exists():
-            with open(PASSWORD_FILE, 'r') as f: 
-                self.password_hash = f.read().strip()
-            if len(self.password_hash) == 64:
-                return
-        
-        # Если файла нет или хэш битый, просим вставить хэш
+        if TOKEN_FILE.exists():
+            with open(TOKEN_FILE, 'r') as f: self.token = f.read().strip()
+            if len(self.token) > 10: return
         print("\n" + "="*65)
-        print("  ВСТАВЬТЕ ХЭШ, КОТОРЫЙ ДАЛ ВАМ АДМИНИСТРАТОР СЕРВЕРА:")
+        print("  ВСТАВЬТЕ ВАШ УНИКАЛЬНЫЙ ТОКЕН ОТ АДМИНИСТРАТОРА:")
         print("="*65)
         while True:
-            h = input("Хэш: ").strip()
-            if len(h) == 64:
-                try: int(h, 16) # Проверяем, что это реально hex число
-                except ValueError: 
-                    print("[!] Это не похоже на SHA-256 хэш. Попробуйте снова.")
-                    continue
-                self.password_hash = h
-                with open(PASSWORD_FILE, 'w') as f: f.write(self.password_hash)
-                logger.info("[+] Hash saved to config")
+            t = input("Токен: ").strip()
+            if len(t) > 10:
+                self.token = t
+                with open(TOKEN_FILE, 'w') as f: f.write(self.token)
+                logger.info("[+] Token saved")
                 break
-            else:
-                print("[!] Длина хэша должна быть ровно 64 символа.")
+            else: print("[!] Токен слишком короткий.")
 
-# ============== WINTUN ОБЕРТКА ==============
+# ============== WINTUN ==============
 class WintunWrapper:
     def __init__(self, dll_path: str = "wintun.dll"):
         found_path = next((p for p in [os.path.join(os.path.dirname(os.path.abspath(__file__)), dll_path), os.path.join(os.getcwd(), dll_path), dll_path] if os.path.exists(p)), None)
@@ -84,41 +77,32 @@ class WintunWrapper:
 class TunInterface:
     def __init__(self, name: str = TUN_ADAPTER_NAME):
         self.name = name; self.wintun = WintunWrapper(); self.adapter_handle = None; self.session_handle = None; self.running = False; self.read_event = None
-
     def create(self):
         try: self.adapter_handle = self.wintun.WintunCreateAdapter(self.name, "VPN", None)
         except: self.adapter_handle = self.wintun.WintunOpenAdapter(self.name)
         self.session_handle = self.wintun.WintunStartSession(self.adapter_handle, 0x400000)
         self.read_event = self.wintun.WintunGetReadWaitEvent(self.session_handle)
         self.running = True
-
     def set_ip(self, ip: str, server_host: str):
         import subprocess
         subprocess.run(f'netsh interface ipv4 delete address "{self.name}"', shell=True, capture_output=True)
         subprocess.run(f'netsh interface ipv4 set address "{self.name}" {ip} 255.255.255.0', shell=True, capture_output=True)
-        
         is_local_test = server_host in ['127.0.0.1', 'localhost']
-
         if is_local_test:
             logger.info("[*] Localhost detected. Routing ONLY VPN subnet.")
             subprocess.run(f'netsh interface ipv4 add route 10.8.0.0/24 "{self.name}" metric=10', shell=True, capture_output=True)
         else:
-            logger.info("[*] Remote server detected. Routing ALL traffic (Full Tunnel).")
+            logger.info("[*] Remote server detected. Routing ALL traffic.")
             gateway = None
             result = subprocess.run('route print -4 0.0.0.0', shell=True, capture_output=True, text=True)
             for line in result.stdout.splitlines():
                 if '0.0.0.0' in line:
                     parts = line.split()
-                    if len(parts) >= 3 and parts[2] != '0.0.0.0':
-                        gateway = parts[2]
-                        break
+                    if len(parts) >= 3 and parts[2] != '0.0.0.0': gateway = parts[2]; break
             if gateway:
                 subprocess.run(f'route add {server_host} mask 255.255.255.255 {gateway}', shell=True, capture_output=True)
-                logger.info(f"[*] Host route to server added via {gateway}")
             subprocess.run(f'netsh interface ipv4 add route 0.0.0.0/0 "{self.name}" metric=10', shell=True, capture_output=True)
             subprocess.run(f'netsh interface ipv4 set dns "{self.name}" static 8.8.8.8', shell=True, capture_output=True)
-            logger.info(f"[+] Default route and DNS redirected to VPN")
-
     def read(self, timeout: float = 0.1) -> Optional[bytes]:
         if not self.session_handle or not self.running: return None
         try:
@@ -138,7 +122,6 @@ class TunInterface:
                         return data
         except: pass
         return None
-
     def write(self, packet: bytes) -> bool:
         if not self.session_handle or not self.running or not packet: return False
         try:
@@ -146,7 +129,6 @@ class TunInterface:
             if ptr and ptr != 0: ctypes.memmove(ptr, packet, len(packet)); self.wintun.WintunSendPacket(self.session_handle, ptr); return True
         except: pass
         return False
-
     def close(self):
         self.running = False
         if self.session_handle: self.wintun.WintunEndSession(self.session_handle)
@@ -160,10 +142,12 @@ class VPNClient:
         self.tun: Optional[TunInterface] = None; self.running = False
         self.anti_dpi: Optional[AntiDPIEngine] = None; self.cred_manager = CredentialManager()
         self.assigned_ip: Optional[str] = None
-        self.stats = {'tx': 0, 'rx': 0}; self.stats_lock = threading.Lock()
+        self.aesgcm: Optional[AESGCM] = None
 
     def connect(self):
         raw_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        # Включаем пинг сервера каждые 5 сек
+        raw_sock.ioctl(socket.SIO_KEEPALIVE_VALS, (1, 5000, 1000))
         raw_sock.settimeout(10)
         try:
             raw_sock.connect((self.host, self.port))
@@ -171,15 +155,18 @@ class VPNClient:
             self.sock = self.anti_dpi.wrap_socket(raw_sock)
             self.sock.settimeout(30.0)
             
-            # Формируем хэндшейк Trojan (68 байт под SHA-256)
-            # Мы больше НИЧЕГО не хэшируем, просто отправляем хэш как есть
-            trojan_handshake = b'\r\n' + self.cred_manager.password_hash.encode('ascii') + b'\r\n'
-            self.sock.sendall(trojan_handshake)
+            token_hash = hashlib.sha256(self.cred_manager.token.encode()).hexdigest()
+            self.sock.sendall(b'\r\n' + token_hash.encode('ascii') + b'\r\n')
             
             header = self._recv_exact(2)
-            if len(header) < 2: raise ConnectionError("Failed to receive IP header")
+            if len(header) < 2: raise ConnectionError("Failed to receive IP")
             length = struct.unpack('!H', header)[0]
             self.assigned_ip = self._recv_exact(length).decode()
+            
+            net_key = self._recv_exact(32)
+            if len(net_key) != 32: raise ConnectionError("Failed to receive E2E Key")
+            self.aesgcm = AESGCM(net_key)
+            logger.info("[+] E2E Encryption Key received")
             
             self.tun = TunInterface()
             self.tun.create()
@@ -189,7 +176,7 @@ class VPNClient:
             threading.Thread(target=self._tun_reader_loop, daemon=True).start()
             threading.Thread(target=self._network_reader_loop, daemon=True).start()
             
-            logger.info(f"[+] Connected! Assigned IP: {self.assigned_ip}")
+            logger.info(f"[+] Connected! IP: {self.assigned_ip}")
             return True
         except Exception as e:
             logger.error(f"Connection error: {e}")
@@ -205,44 +192,93 @@ class VPNClient:
     def _tun_reader_loop(self):
         while self.running:
             packet = self.tun.read(timeout=0.05)
-            if packet:
+            if packet and len(packet) >= 20:
                 try:
+                    dst_ip_bytes = packet[16:20]
+                    dst_ip = socket.inet_ntoa(dst_ip_bytes)
+                    
+                    if dst_ip.startswith("10.8.0."):
+                        nonce = os.urandom(12)
+                        cipher = self.aesgcm.encrypt(nonce, packet, None)
+                        inner_payload = bytes([FLAG_E2E_LAN]) + dst_ip_bytes + nonce + cipher
+                    else:
+                        inner_payload = bytes([FLAG_RAW_INTERNET]) + packet
+
+                    # Фрейминг: отделяем данные от мусора
+                    inner_len_bytes = struct.pack('!I', len(inner_payload))
                     pad_len = secrets.randbelow(32)
                     padding = secrets.token_bytes(pad_len)
-                    payload = struct.pack('!I', len(packet)) + packet + padding
-                    frame = struct.pack('!H', len(payload)) + payload
+                    
+                    frame_payload = inner_len_bytes + inner_payload + padding
+                    frame = struct.pack('!H', len(frame_payload)) + frame_payload
+                    
                     self.sock.sendall(frame)
-                    with self.stats_lock: self.stats['tx'] += len(frame)
-                except: break
+                    
+                except (ConnectionResetError, BrokenPipeError, OSError):
+                    logger.warning("[!] Server connection lost while sending packet")
+                    self.running = False # Сигнализируем главному потоку об отключении
+                    break
+                except Exception as e:
+                    logger.error(f"[!] Error processing TUN packet: {e}")
+                    self.running = False
+                    break
 
     def _network_reader_loop(self):
         while self.running:
             try:
                 header = self._recv_exact(2)
-                if not header: break
+                if not header: 
+                    logger.warning("[!] Server closed connection (EOF)")
+                    self.running = False # Сигнализируем
+                    break
                 length = struct.unpack('!H', header)[0]
-                if 0 < length < 65535:
-                    data = self._recv_exact(length)
-                    if not data or len(data) != length: break
-                    if len(data) >= 4:
-                        real_pkt_len = struct.unpack('!I', data[:4])[0]
-                        if real_pkt_len > 0 and real_pkt_len <= len(data) - 4:
-                            self.tun.write(data[4:4+real_pkt_len])
-                            with self.stats_lock: self.stats['rx'] += length
-            except socket.timeout: continue
-            except: break
+                if not (0 < length < 65535): 
+                    self.running = False
+                    break
+                
+                data = self._recv_exact(length)
+                if not data or len(data) != length: 
+                    logger.warning("[!] Incomplete data received")
+                    self.running = False # Сигнализируем
+                    break
+                
+                if len(data) < 4: continue
+                
+                # Безопасно извлекаем inner_payload, отсекая padding
+                inner_len = struct.unpack('!I', data[:4])[0]
+                inner_payload = data[4:4+inner_len]
+                
+                if not inner_payload: continue
+                flag = inner_payload[0]
+                payload = inner_payload[1:]
+                
+                if flag == FLAG_RAW_INTERNET:
+                    self.tun.write(payload)
+                elif flag == FLAG_E2E_LAN:
+                    if len(payload) >= 12:
+                        nonce = payload[:12]
+                        cipher = payload[12:]
+                        decrypted_packet = self.aesgcm.decrypt(nonce, cipher, None)
+                        self.tun.write(decrypted_packet)
+            except socket.timeout: 
+                continue
+            except Exception as e: 
+                logger.error(f"Read loop error: {e}")
+                self.running = False # Сигнализируем
+                break
 
     def _recv_exact(self, length: int) -> bytes:
         data = b''
         while len(data) < length:
             try:
                 chunk = self.sock.recv(length - len(data))
-                if not chunk: return b''
+                if not chunk: return b''  
                 data += chunk
             except socket.timeout:
-                if not data: raise
-                return data
-            except: return b''
+                if not data: raise  
+                return b''  
+            except OSError: 
+                return b''  
         return data
 
 def check_admin() -> bool:
@@ -254,7 +290,7 @@ def main():
     client = VPNClient()
     try:
         if client.connect():
-            while client.running: time.sleep(1)
+            while client.running: time.sleep(1) # Теперь этот цикл корректно прервется!
         else: print("[!] Failed to connect")
     except KeyboardInterrupt: pass
     finally: client.disconnect()
