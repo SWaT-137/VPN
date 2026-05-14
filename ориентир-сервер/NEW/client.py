@@ -1,9 +1,8 @@
 import asyncio
 import struct
 import subprocess
-import ssl
+import hashlib
 import time
-import hashlib # ДОБАВЛЕНО
 from pytun_pmd3 import TunTapDevice
 
 # Настройки
@@ -14,138 +13,100 @@ TUN_GW = '10.0.0.1'
 NETMASK = '255.255.255.0'
 MTU = 1280
 ADAPTER_NAME = "PyVPN"
-LOCAL_GW = "192.168.1.1" # УБЕДИТЕСЬ, ЧТО ЗДЕСЬ IP ВАШЕГО РОУТЕРА!
+LOCAL_GW = "192.168.1.1" # IP ВАШЕГО РОУТЕРА!
 
 # --- НАСТРОЙКИ TROJAN ---
-PASSWORD = "SWaT_2008" # ДОЛЖЕН СОВПАДАТЬ С ПАРОЛЕМ СЕРВЕРА!
+PASSWORD = "SWaT_2008" # СОВПАДАЕТ С СЕРВЕРОМ!
+SHA224_HASH = hashlib.sha224(PASSWORD.encode()).hexdigest().encode()
 # ------------------------
 
-class VPNClient:
-    def __init__(self):
-        self.tcp_writer = None
-        self.adapter = None
+class VPNClientProtocol(asyncio.DatagramProtocol):
+    def __init__(self, tun_device):
+        self.transport = None
+        self.adapter = tun_device
 
-    def setup_wintun(self):
-        print(f"Создание адаптера {ADAPTER_NAME}...")
-        self.adapter = TunTapDevice(name=ADAPTER_NAME)
-        self.adapter.mtu = 1280 # Используем безопасный MTU
+    def connection_made(self, transport):
+        self.transport = transport
+        print("UDP транспорт готов.")
 
-        print("Поднятие WinTun-адаптера...")
-        self.adapter.up()
+    def datagram_received(self, data, addr):
+        # Получили ответ от сервера
+        if len(data) < 60:
+            return
+            
+        recv_hash = data[:56]
+        payload = data[56:]
 
-        print(f"Назначение IP {TUN_IP} и шлюза {TUN_GW}...")
-        subprocess.run(
-            f'netsh interface ip set address name="{ADAPTER_NAME}" static {TUN_IP} {NETMASK} {TUN_GW}', 
-            shell=True
-        )
-
-        print("Настройка DNS (1.1.1.1) для адаптера...")
-        subprocess.run(
-            f'netsh interface ip set dns name="{ADAPTER_NAME}" static 1.1.1.1 primary', 
-            shell=True
-        )
-
-        print("Установка метрики 1 (высший приоритет) для VPN-адаптера...")
-        subprocess.run(
-            f'netsh interface ipv4 set interface "{ADAPTER_NAME}" metric=1', 
-            shell=True
-        )
-
-        print("Ожидание применения настроек Windows (3 сек)...")
-        time.sleep(3)
-
-        print(f"Добавление исключения для VPN-сервера {SERVER_IP}...")
-        subprocess.run(
-            f'route add {SERVER_IP} mask 255.255.255.255 {LOCAL_GW} metric 5', 
-            shell=True
-        )
-
-        # --- ДОБАВЛЕНО: ПРИНУДИТЕЛЬНЫЙ МАРШРУТ ЧЕРЕЗ VPN ---
-        # Говорим Windows: "Весь трафик (0.0.0.0) отправляй на 10.0.0.1 с высшим приоритетом (metric 1)"
-        print("Принудительное перенаправление всего трафика (0.0.0.0/0) через VPN...")
-        subprocess.run(
-            f'route add 0.0.0.0 mask 0.0.0.0 {TUN_GW} metric 1', 
-            shell=True
-        )
-        # --------------------------------------------------
-
-        print("WinTun настроен.")
-
-    def cleanup_routes(self):
-        print("\nОчистка маршрутов...")
-        # Достаточно удалить только исключение для сервера. 
-        # Маршрут 0.0.0.0 удалится сам при закрытии адаптера.
-        subprocess.run(f'route delete {SERVER_IP}', shell=True, capture_output=True)
-
-    async def tcp_client(self):
-        ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-
-        reader, self.tcp_writer = await asyncio.open_connection(
-            SERVER_IP, 
-            SERVER_PORT, 
-            ssl=ssl_context
-        )
-        print("Подключено к VPN серверу (TLS)! Отправка Trojan-заголовка...")
-
-        sha224_hash = hashlib.sha224(PASSWORD.encode()).hexdigest().encode()
-        header = sha224_hash + b'\x01' + b'\r\n'
-        self.tcp_writer.write(header)
-        await self.tcp_writer.drain()
-        print("Аутентификация отправлена.")
-
-        # --- ДОБАВЛЕНО: Ограничиваем буфер отправки ---
-        self.tcp_writer.transport.set_write_buffer_limits(high=65536, low=16384)
-        # ---------------------------------------------
-
-        self.setup_wintun()
-        asyncio.create_task(self.read_from_wintun())
-
-        # ... дальше без изменений ...
-
-        try:
-            while True:
-                length_data = await reader.readexactly(2)
-                length = struct.unpack('!H', length_data)[0]
-                packet = await reader.readexactly(length)
-                try:
-                    self.adapter.write(packet)
-                except Exception:
-                    pass
-        except asyncio.IncompleteReadError:
-            print("Соединение с сервером разорвано.")
-        except Exception as e:
-            print(f"Ошибка TCP: {e}")
-        finally:
-            self.cleanup_routes()
-            if self.adapter:
-                self.adapter.down()
-                self.adapter.close()
-
-
-    async def read_from_wintun(self):
-        loop = asyncio.get_event_loop()
-        while True:
+        # Проверяем, что пакет от нашего сервера
+        if recv_hash == SHA224_HASH:
             try:
-                packet = await loop.run_in_executor(None, self.adapter.read)
-                if packet and self.tcp_writer:
-                    length = len(packet)
-                    frame = struct.pack('!H', length) + packet
-                    self.tcp_writer.write(frame)
-                    # ВОЗВРАЩАЕМ DRAIN: плавная отправка без очередей
-                    await self.tcp_writer.drain()
+                # Пишем в WinTUN
+                self.adapter.write(payload)
             except Exception:
                 pass
 
+    def error_received(self, exc):
+        print(f"UDP ошибка: {exc}")
+
+def setup_wintun():
+    print(f"Создание адаптера {ADAPTER_NAME}...")
+    adapter = TunTapDevice(name=ADAPTER_NAME)
+    adapter.mtu = MTU
+
+    print("Поднятие WinTun-адаптера...")
+    adapter.up()
+
+    print(f"Назначение IP {TUN_IP} и шлюза {TUN_GW}...")
+    subprocess.run(f'netsh interface ip set address name="{ADAPTER_NAME}" static {TUN_IP} {NETMASK} {TUN_GW}', shell=True)
+
+    print("Настройка DNS (1.1.1.1) для адаптера...")
+    subprocess.run(f'netsh interface ip set dns name="{ADAPTER_NAME}" static 1.1.1.1 primary', shell=True)
+
+    print("Установка метрики 1 для VPN-адаптера...")
+    subprocess.run(f'netsh interface ipv4 set interface "{ADAPTER_NAME}" metric=1', shell=True)
+
+    print("Ожидание применения настроек Windows (3 сек)...")
+    time.sleep(3)
+
+    print(f"Добавление исключения для VPN-сервера {SERVER_IP}...")
+    subprocess.run(f'route add {SERVER_IP} mask 255.255.255.255 {LOCAL_GW} metric 5', shell=True)
+
+    print("Принудительное перенаправление всего трафика через VPN...")
+    subprocess.run(f'route add 0.0.0.0 mask 0.0.0.0 {TUN_GW} metric 1', shell=True)
+
+    print("WinTun настроен.")
+    return adapter
+
+async def read_from_wintun(adapter, transport):
+    loop = asyncio.get_event_loop()
+    while True:
+        try:
+            packet = await loop.run_in_executor(None, adapter.read)
+            if packet:
+                # Формируем пакет: [Хеш 56 байт][IP-пакет]
+                frame = SHA224_HASH + packet
+                # Отправляем на сервер
+                transport.sendto(frame, (SERVER_IP, SERVER_PORT))
+        except Exception:
+            pass
+
 async def main():
-    client = VPNClient()
-    try:
-        await client.tcp_client()
-    except KeyboardInterrupt:
-        print("\nПрограмма остановлена пользователем.")
-    finally:
-        client.cleanup_routes()
+    # Настраиваем сеть
+    adapter = setup_wintun()
+
+    # Создаем UDP транспорт
+    loop = asyncio.get_running_loop()
+    transport, protocol = await loop.create_datagram_endpoint(
+        lambda: VPNClientProtocol(adapter),
+        local_addr=('0.0.0.0', 0) # Случайный исходящий порт
+    )
+
+    print("Запуск цикла чтения WinTUN...")
+    # Запускаем чтение из адаптера
+    await read_from_wintun(adapter, transport)
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nОстановка клиента...")
