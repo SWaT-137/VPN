@@ -316,23 +316,9 @@ class MainWindow(QWidget):
 
 
     def save_dialog_settings(self):
-        new_server = self.server_edit.text()
-        new_port_str = self.port_edit.text()
-        new_password = self.password_edit.text()
-
-        if new_port_str:
-            new_port = int(new_port_str)
-        else:
-            new_port = 443
-
-        self.server = new_server
-        self.port = new_port
-        self.password = new_password
-
+        self.subscription_link = self.sub_link_edit.text()
         self.save_settings()
-
         self.overlay.hide_overlay()
-
 
 
     def show_menu(self):
