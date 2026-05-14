@@ -1,73 +1,29 @@
 import asyncio
-import struct
 import pytun
-import ssl
 import hashlib
 
 # Настройки сети туннеля
 TUN_IP = '10.0.0.1'
-CLIENT_IP = '10.0.0.2'
 NETMASK = '255.255.255.0'
-MTU = 1400
+MTU = 1280
 SERVER_PORT = 65432
 
 # --- НАСТРОЙКИ TROJAN ---
-PASSWORD = "SWaT_2008" # ЗАДАЙТЕ СВОЙ ПАРОЛЬ!
+PASSWORD = "SWaT_2008" # СОВПАДАЕТ С КЛИЕНТОМ!
 EXPECTED_HASH = hashlib.sha224(PASSWORD.encode()).hexdigest().encode()
-# FALLBACK_PORT больше не нужен!
 # ------------------------
 
-class VPNServer:
+class VPNServerProtocol(asyncio.DatagramProtocol):
     def __init__(self):
-        self.tcp_writer = None
+        self.transport = None
         self.tun = None
+        self.client_addr = None # Запоминаем, кому отправлять данные
 
-    async def handle_client(self, reader, writer):
-        peername = writer.get_extra_info('peername')
-        print(f"Новое TLS-подключение от {peername}. Ожидание аутентификации...")
-
-        try:
-            header = await reader.readexactly(59)
-            recv_hash = header[:56]
-            command = header[56]
-            crlf = header[57:59]
-
-            if recv_hash == EXPECTED_HASH and command == 0x01 and crlf == b'\r\n':
-                print(f"Успешная аутентификация от {peername}! Запуск VPN.")
-                await self.start_vpn(reader, writer)
-            else:
-                print(f"Неверный пароль от {peername}. Отправка фейкового HTTP ответа...")
-                # Упрощенный вызов без initial_data
-                await self.handle_fallback(writer)
-
-        except asyncio.IncompleteReadError:
-            print(f"Клиент {peername} отключился до отправки заголовка.")
-            writer.close()
-
-    # --- НОВЫЙ МЕТОД: ВСТРОЕННЫЙ FALLBACK ---
-    async def handle_fallback(self, client_writer):
-        # Формируем ответ, имитирующий обычный веб-сервер (Nginx 404 Not Found)
-        http_response = (
-            b"HTTP/1.1 404 Not Found\r\n"
-            b"Server: nginx\r\n"
-            b"Content-Type: text/html\r\n"
-            b"Connection: close\r\n"
-            b"\r\n"
-            b"<html><head><title>404 Not Found</title></head>"
-            b"<body><center><h1>404 Not Found</h1></center></body></html>"
-        )
-        try:
-            # Отправляем фейковый ответ и закрываем соединение
-            client_writer.write(http_response)
-            await client_writer.drain()
-        except Exception:
-            pass
-        finally:
-            client_writer.close()
-    # -----------------------------------------
-
-    async def start_vpn(self, reader, writer):
-        self.tcp_writer = writer
+    def connection_made(self, transport):
+        self.transport = transport
+        print(f"UDP VPN Сервер слушает порт {SERVER_PORT}...")
+        
+        # Создаем TUN интерфейс
         self.tun = pytun.TunTapDevice(name='tun0', flags=pytun.IFF_TUN | pytun.IFF_NO_PI)
         self.tun.addr = TUN_IP
         self.tun.netmask = NETMASK
@@ -75,61 +31,62 @@ class VPNServer:
         self.tun.up()
         print(f"TUN интерфейс tun0 поднят с IP {TUN_IP}")
 
+        # Запускаем чтение из TUN
         asyncio.create_task(self.read_from_tun())
 
-        try:
-            while True:
-                length_data = await reader.readexactly(2)
-                length = struct.unpack('!H', length_data)[0]
-                packet = await reader.readexactly(length)
-                self.tun.write(packet)
-        except asyncio.IncompleteReadError:
-            print("VPN-клиент отключился.")
-        except Exception as e:
-            print(f"Ошибка при чтении из TCP: {e}")
-        finally:
-            if self.tun:
-                self.tun.close()
-            writer.close()
+    def datagram_received(self, data, addr):
+        # Пакет от клиента. Проверяем длину (минимум 56 байт хеш + заголовок IP)
+        if len(data) < 60:
+            return
+
+        recv_hash = data[:56]
+        payload = data[56:]
+
+        # Проверка пароля
+        if recv_hash == EXPECTED_HASH:
+            # Запоминаем/обновляем адрес клиента
+            if self.client_addr != addr:
+                print(f"Обнаружен новый клиент: {addr}")
+                self.client_addr = addr
+            
+            # Отправляем чистый IP-пакет в TUN
+            try:
+                self.tun.write(payload)
+            except Exception:
+                pass
 
     async def read_from_tun(self):
         loop = asyncio.get_event_loop()
         while True:
             try:
+                # Читаем IP-пакет из ядра
                 packet = await loop.run_in_executor(None, self.tun.read, MTU)
-                if packet and self.tcp_writer:
-                    length = len(packet)
-                    frame = struct.pack('!H', length) + packet
-                    self.tcp_writer.write(frame)
+                
+                # Если знаем клиента, отправляем ему пакет с хешем
+                if packet and self.client_addr:
+                    frame = EXPECTED_HASH + packet
+                    self.transport.sendto(frame, self.client_addr)
             except OSError as e:
                 if e.errno == 9:
-                    print("Клиент отключился (TUN закрыт).")
+                    print("TUN закрыт.")
                     break
             except Exception as e:
-                print(f"Ошибка чтения из TUN: {e}")
+                print(f"Ошибка TUN: {e}")
                 break
 
 async def main():
-    server = VPNServer()
+    loop = asyncio.get_running_loop()
     
-    ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-    try:
-        ssl_context.load_cert_chain(certfile="cert.pem", keyfile="key.pem")
-        print("SSL контекст загружен.")
-    except FileNotFoundError:
-        print("ОШИБКА: Файлы cert.pem и key.pem не найдены!")
-        return
-
-    srv = await asyncio.start_server(
-        server.handle_client, 
-        '0.0.0.0', 
-        SERVER_PORT, 
-        ssl=ssl_context
+    # Создаем UDP эндпоинт
+    transport, protocol = await loop.create_datagram_endpoint(
+        lambda: VPNServerProtocol(),
+        local_addr=('0.0.0.0', SERVER_PORT)
     )
-    print(f"VPN Сервер слушает порт {SERVER_PORT} (TLS + Trojan + Встроенный Fallback)...")
     
-    async with srv:
-        await srv.serve_forever()
+    try:
+        await asyncio.Future() # Бесконечный запуск
+    finally:
+        transport.close()
 
 if __name__ == '__main__':
     asyncio.run(main())
