@@ -12,7 +12,7 @@ SERVER_PORT = 65432
 TUN_IP = '10.0.0.2'
 TUN_GW = '10.0.0.1'
 NETMASK = '255.255.255.0'
-MTU = 1400
+MTU = 1280
 ADAPTER_NAME = "PyVPN"
 LOCAL_GW = "192.168.1.1" # УБЕДИТЕСЬ, ЧТО ЗДЕСЬ IP ВАШЕГО РОУТЕРА!
 
@@ -28,7 +28,7 @@ class VPNClient:
     def setup_wintun(self):
         print(f"Создание адаптера {ADAPTER_NAME}...")
         self.adapter = TunTapDevice(name=ADAPTER_NAME)
-        self.adapter.mtu = MTU
+        self.adapter.mtu = 1280 # Используем безопасный MTU
 
         print("Поднятие WinTun-адаптера...")
         self.adapter.up()
@@ -51,19 +51,24 @@ class VPNClient:
             shell=True
         )
 
-        # --- КРИТИЧЕСКИ ВАЖНАЯ ПАУЗА ---
-        # Даем Windows 3 секунды, чтобы она переварила новые маршруты 
-        # и зарегистрировала адаптер в системе
         print("Ожидание применения настроек Windows (3 сек)...")
         time.sleep(3)
-        # -------------------------------
 
         print(f"Добавление исключения для VPN-сервера {SERVER_IP}...")
         subprocess.run(
             f'route add {SERVER_IP} mask 255.255.255.255 {LOCAL_GW} metric 5', 
             shell=True
         )
-        
+
+        # --- ДОБАВЛЕНО: ПРИНУДИТЕЛЬНЫЙ МАРШРУТ ЧЕРЕЗ VPN ---
+        # Говорим Windows: "Весь трафик (0.0.0.0) отправляй на 10.0.0.1 с высшим приоритетом (metric 1)"
+        print("Принудительное перенаправление всего трафика (0.0.0.0/0) через VPN...")
+        subprocess.run(
+            f'route add 0.0.0.0 mask 0.0.0.0 {TUN_GW} metric 1', 
+            shell=True
+        )
+        # --------------------------------------------------
+
         print("WinTun настроен.")
 
     def cleanup_routes(self):
@@ -84,17 +89,20 @@ class VPNClient:
         )
         print("Подключено к VPN серверу (TLS)! Отправка Trojan-заголовка...")
 
-        # --- ОТПРАВКА TROJAN ЗАГОЛОВКА ---
         sha224_hash = hashlib.sha224(PASSWORD.encode()).hexdigest().encode()
-        # Формат: [Хеш 56 байт][Команда 0x01][CRLF \r\n]
         header = sha224_hash + b'\x01' + b'\r\n'
         self.tcp_writer.write(header)
-        await self.tcp_writer.drain() # Ждем, пока заголовок точно уйдет в сеть
+        await self.tcp_writer.drain()
         print("Аутентификация отправлена.")
-        # ---------------------------------
+
+        # --- ДОБАВЛЕНО: Ограничиваем буфер отправки ---
+        self.tcp_writer.transport.set_write_buffer_limits(high=65536, low=16384)
+        # ---------------------------------------------
 
         self.setup_wintun()
         asyncio.create_task(self.read_from_wintun())
+
+        # ... дальше без изменений ...
 
         try:
             while True:
@@ -115,6 +123,7 @@ class VPNClient:
                 self.adapter.down()
                 self.adapter.close()
 
+
     async def read_from_wintun(self):
         loop = asyncio.get_event_loop()
         while True:
@@ -124,6 +133,8 @@ class VPNClient:
                     length = len(packet)
                     frame = struct.pack('!H', length) + packet
                     self.tcp_writer.write(frame)
+                    # ВОЗВРАЩАЕМ DRAIN: плавная отправка без очередей
+                    await self.tcp_writer.drain()
             except Exception:
                 pass
 
