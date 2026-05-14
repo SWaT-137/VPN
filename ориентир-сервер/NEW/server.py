@@ -1,143 +1,135 @@
-import socket
+import asyncio
+import struct
+import pytun
 import ssl
 import hashlib
-import struct
-import threading
-import sys
 
-PASSWORD = "mysecret"
-PASSWORD_HASH_HEX = hashlib.sha224(PASSWORD.encode()).hexdigest()
-print(f"[DEBUG] Сервер ожидает хеш: {PASSWORD_HASH_HEX}") # <-- ДОБАВИТЬ ЭТО
-DEST_BACKEND_HOST = "127.0.0.1"   # "заглушка" для не-Trojan трафика (можно: "localhost", порт 80)
-DEST_BACKEND_PORT = 80
+# Настройки сети туннеля
+TUN_IP = '10.0.0.1'
+CLIENT_IP = '10.0.0.2'
+NETMASK = '255.255.255.0'
+MTU = 1400
+SERVER_PORT = 65432
 
-HOST = "0.0.0.0"
-PORT = 8443
-CERT = "/etc/letsencrypt/live/blog.infoblink.ru/fullchain.pem"
-KEY  = "/etc/letsencrypt/live/blog.infoblink.ru/privkey.pem"
+# --- НАСТРОЙКИ TROJAN ---
+PASSWORD = "SWaT_2008" # ЗАДАЙТЕ СВОЙ ПАРОЛЬ!
+EXPECTED_HASH = hashlib.sha224(PASSWORD.encode()).hexdigest().encode()
+# FALLBACK_PORT больше не нужен!
+# ------------------------
 
-def forward(src, dst):
-    try:
-        while True:
-            data = src.recv(4096)
-            if not data:
-                break
-            dst.sendall(data)
-    except Exception:
-        pass
-    finally:
-        try: src.close()
-        except Exception: pass
-        try: dst.close()
-        except Exception: pass
+class VPNServer:
+    def __init__(self):
+        self.tcp_writer = None
+        self.tun = None
 
-def relay(conn1, conn2):
-    t1 = threading.Thread(target=forward, args=(conn1, conn2), daemon=True)
-    t2 = threading.Thread(target=forward, args=(conn2, conn1), daemon=True)
-    t1.start()
-    t2.start()
-    t1.join()
-    t2.join()
+    async def handle_client(self, reader, writer):
+        peername = writer.get_extra_info('peername')
+        print(f"Новое TLS-подключение от {peername}. Ожидание аутентификации...")
 
-def parse_and_handle(tls_conn, first_data):
-    """Проверяем пароль и Trojan-запрос в first_data, запускаем туннель к цели или к backend."""
-    # Минимальный размер: 56 (hash) + 2 (CRLF) + 1 (CMD) + 1 (ATYP) + 1 (мин. ADDR) + 2 (PORT) + 2 (CRLF) = 65
-    if len(first_data) < 65:
-        raise ValueError("too short")
-
-    pw_hex = first_data[:56]
-    if pw_hex != PASSWORD_HASH_HEX:
-        raise ValueError("invalid password")
-
-    crlf1 = first_data[56:58]
-    if crlf1 != b"\r\n":
-        raise ValueError("no CRLF after password")
-
-    rest = first_data[58:]
-
-    # Найдем второй CRLF — он заканчивает Trojan Request
-    idx = rest.find(b"\r\n")
-    if idx < 0:
-        raise ValueError("no CRLF after trojan request")
-
-    trojan_req = rest[:idx]
-    payload_after = rest[idx+2:]  # после CRLF
-
-    # Парсим Trojan Request: CMD (1), ATYP (1), DST.ADDR, DST.PORT (2)
-    if len(trojan_req) < 4:
-        raise ValueError("trojan request too short")
-
-    cmd = trojan_req[0]
-    atyp = trojan_req[1]
-
-    if cmd != 0x01:      # сейчас только CONNECT (0x01)
-        raise ValueError("unsupported cmd")
-
-    if atyp == 0x01:      # IPv4
-        if len(trojan_req) < 1 + 1 + 4 + 2:
-            raise ValueError("bad ipv4 request")
-        dst_addr = socket.inet_ntoa(trojan_req[2:6])
-        dst_port = struct.unpack("!H", trojan_req[6:8])[0]
-    elif atyp == 0x03:    # домен
-        if len(trojan_req) < 1 + 1 + 1 + 2:
-            raise ValueError("bad domain request")
-        domain_len = trojan_req[2]
-        dst_addr = trojan_req[3:3+domain_len].decode("utf-8", errors="replace")
-        dst_port = struct.unpack("!H", trojan_req[3+domain_len:3+domain_len+2])[0]
-    else:
-        raise ValueError("unsupported atyp")
-
-    print(f"[+] Trojan CONNECT to {dst_addr}:{dst_port}")
-
-    remote = socket.create_connection((dst_addr, dst_port), timeout=10)
-
-    # Если в первом пакете была полезная нагрузка — отправляем её в туннель сразу
-    if payload_after:
-        remote.sendall(payload_after)
-
-    relay(tls_conn, remote)
-
-def handle_client(tls_conn):
-    try:
-        first_data = tls_conn.recv(4096)
-        if not first_data:
-            return
-
-        parse_and_handle(tls_conn, first_data)
-    except Exception as e:
-        print(f"[!] Not Trojan / error: {e} -> fallback to backend {DEST_BACKEND_HOST}:{DEST_BACKEND_PORT}")
         try:
-            backend = socket.create_connection((DEST_BACKEND_HOST, DEST_BACKEND_PORT), timeout=10)
-        except Exception:
-            tls_conn.close()
-            return
-        relay(tls_conn, backend)
-    finally:
+            header = await reader.readexactly(59)
+            recv_hash = header[:56]
+            command = header[56]
+            crlf = header[57:59]
+
+            if recv_hash == EXPECTED_HASH and command == 0x01 and crlf == b'\r\n':
+                print(f"Успешная аутентификация от {peername}! Запуск VPN.")
+                await self.start_vpn(reader, writer)
+            else:
+                print(f"Неверный пароль от {peername}. Отправка фейкового HTTP ответа...")
+                # Упрощенный вызов без initial_data
+                await self.handle_fallback(writer)
+
+        except asyncio.IncompleteReadError:
+            print(f"Клиент {peername} отключился до отправки заголовка.")
+            writer.close()
+
+    # --- НОВЫЙ МЕТОД: ВСТРОЕННЫЙ FALLBACK ---
+    async def handle_fallback(self, client_writer):
+        # Формируем ответ, имитирующий обычный веб-сервер (Nginx 404 Not Found)
+        http_response = (
+            b"HTTP/1.1 404 Not Found\r\n"
+            b"Server: nginx\r\n"
+            b"Content-Type: text/html\r\n"
+            b"Connection: close\r\n"
+            b"\r\n"
+            b"<html><head><title>404 Not Found</title></head>"
+            b"<body><center><h1>404 Not Found</h1></center></body></html>"
+        )
         try:
-            tls_conn.close()
+            # Отправляем фейковый ответ и закрываем соединение
+            client_writer.write(http_response)
+            await client_writer.drain()
         except Exception:
             pass
+        finally:
+            client_writer.close()
+    # -----------------------------------------
 
-def main():
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    ctx.load_cert_chain(CERT, KEY)
+    async def start_vpn(self, reader, writer):
+        self.tcp_writer = writer
+        self.tun = pytun.TunTapDevice(name='tun0', flags=pytun.IFF_TUN | pytun.IFF_NO_PI)
+        self.tun.addr = TUN_IP
+        self.tun.netmask = NETMASK
+        self.tun.mtu = MTU
+        self.tun.up()
+        print(f"TUN интерфейс tun0 поднят с IP {TUN_IP}")
 
-    bindsocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    bindsocket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    bindsocket.bind((HOST, PORT))
-    bindsocket.listen(50)
+        asyncio.create_task(self.read_from_tun())
 
-    print(f"[+] Trojan server listening on {HOST}:{PORT} (TLS)")
-
-    while True:
-        conn, addr = bindsocket.accept()
-        print(f"[+] New connection from {addr}")
         try:
-            tls_conn = ctx.wrap_socket(conn, server_side=True)
-        except Exception:
-            conn.close()
-            continue
-        threading.Thread(target=handle_client, args=(tls_conn,), daemon=True).start()
+            while True:
+                length_data = await reader.readexactly(2)
+                length = struct.unpack('!H', length_data)[0]
+                packet = await reader.readexactly(length)
+                self.tun.write(packet)
+        except asyncio.IncompleteReadError:
+            print("VPN-клиент отключился.")
+        except Exception as e:
+            print(f"Ошибка при чтении из TCP: {e}")
+        finally:
+            if self.tun:
+                self.tun.close()
+            writer.close()
 
-if __name__ == "__main__":
-    main()
+    async def read_from_tun(self):
+        loop = asyncio.get_event_loop()
+        while True:
+            try:
+                packet = await loop.run_in_executor(None, self.tun.read, MTU)
+                if packet and self.tcp_writer:
+                    length = len(packet)
+                    frame = struct.pack('!H', length) + packet
+                    self.tcp_writer.write(frame)
+            except OSError as e:
+                if e.errno == 9:
+                    print("Клиент отключился (TUN закрыт).")
+                    break
+            except Exception as e:
+                print(f"Ошибка чтения из TUN: {e}")
+                break
+
+async def main():
+    server = VPNServer()
+    
+    ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    try:
+        ssl_context.load_cert_chain(certfile="cert.pem", keyfile="key.pem")
+        print("SSL контекст загружен.")
+    except FileNotFoundError:
+        print("ОШИБКА: Файлы cert.pem и key.pem не найдены!")
+        return
+
+    srv = await asyncio.start_server(
+        server.handle_client, 
+        '0.0.0.0', 
+        SERVER_PORT, 
+        ssl=ssl_context
+    )
+    print(f"VPN Сервер слушает порт {SERVER_PORT} (TLS + Trojan + Встроенный Fallback)...")
+    
+    async with srv:
+        await srv.serve_forever()
+
+if __name__ == '__main__':
+    asyncio.run(main())
