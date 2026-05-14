@@ -1,7 +1,8 @@
 import asyncio
 import struct
 import subprocess
-import ssl # ДОБАВЛЕНО
+import ssl
+import hashlib # ДОБАВЛЕНО
 from pytun_pmd3 import TunTapDevice
 
 # Настройки
@@ -14,13 +15,16 @@ MTU = 1400
 ADAPTER_NAME = "PyVPN"
 LOCAL_GW = "192.168.1.1" # УБЕДИТЕСЬ, ЧТО ЗДЕСЬ IP ВАШЕГО РОУТЕРА!
 
+# --- НАСТРОЙКИ TROJAN ---
+PASSWORD = "SWaT_2008" # ДОЛЖЕН СОВПАДАТЬ С ПАРОЛЕМ СЕРВЕРА!
+# ------------------------
+
 class VPNClient:
     def __init__(self):
         self.tcp_writer = None
         self.adapter = None
 
     def setup_wintun(self):
-        # ... (код setup_wintun без изменений, включая очистку маршрутов) ...
         print(f"Создание адаптера {ADAPTER_NAME}...")
         self.adapter = TunTapDevice(name=ADAPTER_NAME)
         self.adapter.mtu = MTU
@@ -54,20 +58,25 @@ class VPNClient:
         subprocess.run(f'route delete 0.0.0.0', shell=True, capture_output=True)
 
     async def tcp_client(self):
-        # --- НАСТРОЙКА TLS ---
-        # Отключаем проверку, так как сертификат самоподписанный
         ssl_context = ssl.create_default_context()
         ssl_context.check_hostname = False
         ssl_context.verify_mode = ssl.CERT_NONE
-        # ----------------------
 
-        # Передаем ssl=ssl_context при подключении
         reader, self.tcp_writer = await asyncio.open_connection(
             SERVER_IP, 
             SERVER_PORT, 
             ssl=ssl_context
         )
-        print("Подключено к VPN серверу (TLS зашифровано)!")
+        print("Подключено к VPN серверу (TLS)! Отправка Trojan-заголовка...")
+
+        # --- ОТПРАВКА TROJAN ЗАГОЛОВКА ---
+        sha224_hash = hashlib.sha224(PASSWORD.encode()).hexdigest().encode()
+        # Формат: [Хеш 56 байт][Команда 0x01][CRLF \r\n]
+        header = sha224_hash + b'\x01' + b'\r\n'
+        self.tcp_writer.write(header)
+        await self.tcp_writer.drain() # Ждем, пока заголовок точно уйдет в сеть
+        print("Аутентификация отправлена.")
+        # ---------------------------------
 
         self.setup_wintun()
         asyncio.create_task(self.read_from_wintun())
