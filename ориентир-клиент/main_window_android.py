@@ -1,5 +1,3 @@
-from encodings import utf_8
-
 import flet as ft
 import asyncio
 import os
