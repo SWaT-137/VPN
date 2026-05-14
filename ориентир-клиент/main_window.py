@@ -88,7 +88,6 @@ class OverlayDialog(QWidget):
         color: white;
         background-color: #26252d;
         border-radius: 10px;
-        padding: 20px;
         """)
         self.container.setFixedWidth(320)
 
@@ -187,9 +186,7 @@ class MainWindow(QWidget):
         self.speed1 = 30
 
         self.settings_file = "settings.json"
-        self.server = ""
-        self.port = 443
-        self.password = ""
+        self.subscription_link = ""
 
         self.setWindowTitle("VPN")
         self.setGeometry(100, 100, 220, 280)
@@ -205,7 +202,6 @@ class MainWindow(QWidget):
         self.button4 = QPushButton("⋮", self)
         self.button4.setGeometry(285, 0, 10, 30)
         self.button4.setFixedSize(15, 40)
-        self.button4.setStyleSheet("color: #A0A0B0;")
         self.button4.setFont(QFont("Inter", 30))
         self.button4.setStyleSheet("""
         QPushButton {
@@ -213,7 +209,6 @@ class MainWindow(QWidget):
             border: none;
             color:white 
         }
-        
         QPushButton:hover {
             background-color: rgba(255, 255, 255, 0.08);
         }
@@ -321,23 +316,9 @@ class MainWindow(QWidget):
 
 
     def save_dialog_settings(self):
-        new_server = self.server_edit.text()
-        new_port_str = self.port_edit.text()
-        new_password = self.password_edit.text()
-
-        if new_port_str:
-            new_port = int(new_port_str)
-        else:
-            new_port = 443
-
-        self.server = new_server
-        self.port = new_port
-        self.password = new_password
-
+        self.subscription_link = self.sub_link_edit.text()
         self.save_settings()
-
         self.overlay.hide_overlay()
-
 
 
     def show_menu(self):
@@ -383,62 +364,28 @@ class MainWindow(QWidget):
         content.setLayout(None)
         content.setFixedSize(320, 500)
 
-        # Метка "Сервер"
-        self.label = QLabel("Сервер:", content)
-        self.label.setGeometry(-5, 100, 100, 65)
-        self.label.setStyleSheet("color: white; font-size: 14px; font-weight: bold;")
+        # Метка "Ссылка для подписки"
+        self.sub_label = QLabel("Ссылка для подписки:", content)
+        self.sub_label.setGeometry(10, 180, 280, 30)
+        self.sub_label.setStyleSheet("""
+            color: white;
+            font-size: 20px; 
+            font-weight: bold;
+        """)
 
-        # Поле для ввода сервера
-        self.server_edit = QLineEdit(content)
-        self.server_edit.setFixedSize(200, 35)
-        self.server_edit.setGeometry(85, 115, 200, 20)
-        self.server_edit.setText(self.server)
-        self.server_edit.setPlaceholderText("Введите адрес сервера")
-        self.server_edit.setStyleSheet("""
+        # Поле для ввода ссылки
+        self.sub_link_edit = QLineEdit(content)
+        self.sub_link_edit.setFixedSize(280, 50)
+        self.sub_link_edit.setGeometry(10, 215, 280, 35)
+        self.sub_link_edit.setText(self.subscription_link)
+        self.sub_link_edit.setPlaceholderText("Вставьте ссылку")
+        self.sub_link_edit.setStyleSheet("""
             background-color: #404040;
             color: #A0A0B0;
             border-radius: 5px;
             border: 1px solid #555555;
-            padding: 2px;
+            padding: 2px 5px;
         """)
-
-        # Метка "Порт"
-        self.label2 = QLabel("Порт:", content)
-        self.label2.setGeometry(-5, 150, 100, 65)
-        self.label2.setStyleSheet("color: white; font-size: 14px; font-weight: bold;")
-
-        # Поле для ввода порта
-        self.port_edit = QLineEdit(content)
-        self.port_edit.setFixedSize(200, 35)
-        self.port_edit.setGeometry(85, 165, 200, 20)
-        self.port_edit.setPlaceholderText("По умолчанию 443")
-        self.port_edit.setStyleSheet("""
-            background-color: #404040;
-            color: #A0A0B0;
-            border-radius: 5px;
-            border: 1px solid #555555;
-            padding: 2px;
-        """)
-
-        # Метка "Пароль"
-        self.label3 = QLabel("Пароль:", content)
-        self.label3.setGeometry(-5, 200, 100, 65)
-        self.label3.setStyleSheet("color: white; font-size: 14px; font-weight: bold;")
-
-        # Поле для ввода пароля
-        self.password_edit = QLineEdit(content)
-        self.password_edit.setFixedSize(200, 35)
-        self.password_edit.setGeometry(85, 215, 200, 20)
-        self.password_edit.setText(self.password)
-        self.password_edit.setPlaceholderText("Введите пароль")
-        self.password_edit.setStyleSheet("""
-            background-color: #404040;
-            color: #A0A0B0;
-            border-radius: 5px;
-            border: 1px solid #555555;
-            padding: 2px;
-        """)
-        self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
 
         self.save_button = QPushButton("Сохранить", content)
         self.save_button.setCursor(Qt.PointingHandCursor)
@@ -560,24 +507,14 @@ class MainWindow(QWidget):
             with open(self.settings_file, "r", encoding='utf-8') as f:
                 data = json.load(f)
 
-            self.server = data["server"]
-            self.port = data["port"]
-            self.password = data["password"]
+            self.subscription_link = data.get("subscription_link", "")
         else:
-            data = {
-                "server": "",
-                "port": 443,
-                "password": ""
-            }
-            with open("settings.json", "w", encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=4)
+            self.save_settings()
 
 
     def save_settings(self):
         data_save = {
-            "server": self.server,
-            "port": self.port,
-            "password": self.password
+            "subscription_link": self.subscription_link
         }
 
         with open(self.settings_file, "w", encoding='utf-8') as f:
