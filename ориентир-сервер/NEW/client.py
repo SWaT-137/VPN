@@ -7,12 +7,16 @@ import os
 import sys
 import ctypes
 import socket
+import json # Добавлено для конфига
 from pytun_pmd3 import TunTapDevice
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
 
-# Настройки
+# === НАСТРОЙКИ ПО УМОЛЧАНИЮ ===
+CONFIG_FILE = "config.json"
+
+# Глобальные переменные, которые заполнятся из конфига
 SERVER_IP = '163.5.29.66'
 SERVER_PORT = 65432
 TUN_IP = '10.0.0.2'
@@ -20,18 +24,11 @@ TUN_GW = '10.0.0.1'
 NETMASK = '255.255.255.0'
 MTU = 1280
 ADAPTER_NAME = "PyVPN"
-
-# --- НАСТРОЙКИ TROJAN ---
 PASSWORD = "SWaT_2008"
-SHA224_HASH = hashlib.sha224(PASSWORD.encode()).hexdigest().encode()
 
-key_material = PBKDF2HMAC(
-    algorithm=hashes.SHA256(),
-    length=32,
-    salt=b'trojan-vpn-salt',
-    iterations=100000,
-).derive(PASSWORD.encode())
-cipher = ChaCha20Poly1305(key_material)
+# Криптография (инициализируется позже, после загрузки пароля)
+SHA224_HASH = None
+cipher = None
 # ------------------------
 
 CMD_DATA = 0x00
@@ -47,27 +44,69 @@ def is_admin():
         return False
 
 def get_default_gateway():
-    """Автоматически определяет IP реального роутера (шлюза) в Windows"""
     try:
-        # Запрашиваем таблицу маршрутизации
         result = subprocess.run("route print -4 0.0.0.0", capture_output=True, text=True, shell=True)
         lines = result.stdout.split('\n')
-        
         for line in lines:
             line = line.strip()
-            # Ищем строку базового маршрута 0.0.0.0
             if line.startswith("0.0.0.0") and "0.0.0.0" in line:
                 parts = line.split()
                 if len(parts) >= 5:
                     gateway = parts[2]
                     interface_ip = parts[3]
-                    # Убеждаемся, что это не наш VPN-шлюз и не интерфейс VPN
                     if gateway != TUN_GW and interface_ip != TUN_IP:
                         return gateway
         return None
     except Exception as e:
         print(f"Ошибка при определении шлюза: {e}")
         return None
+
+def load_config():
+    global SERVER_IP, SERVER_PORT, TUN_IP, TUN_GW, NETMASK, MTU, ADAPTER_NAME, PASSWORD
+    global SHA224_HASH, cipher
+
+    if not os.path.exists(CONFIG_FILE):
+        print(f"Файл {CONFIG_FILE} не найден. Создаю шаблон...")
+        default_cfg = {
+            "server_ip": "163.5.29.66",
+            "server_port": 65432,
+            "tun_ip": "10.0.0.2",
+            "password": "SWaT_2008",
+            "adapter_name": "PyVPN"
+        }
+        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(default_cfg, f, indent=4)
+        print(f"✅ Создан файл {CONFIG_FILE}. Отредактируйте его и перезапустите программу.")
+        input("\nНажмите Enter для выхода...")
+        sys.exit(1)
+
+    try:
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            cfg = json.load(f)
+        
+        SERVER_IP = cfg.get("server_ip", SERVER_IP)
+        SERVER_PORT = cfg.get("server_port", SERVER_PORT)
+        TUN_IP = cfg.get("tun_ip", TUN_IP)
+        TUN_GW = TUN_IP[:-1] + '1' # Автоматически делаем шлюз (если IP 10.0.0.3, шлюз 10.0.0.1)
+        PASSWORD = cfg.get("password", PASSWORD)
+        ADAPTER_NAME = cfg.get("adapter_name", ADAPTER_NAME)
+        MTU = cfg.get("mtu", MTU)
+
+        # Инициализируем криптографию на основе загруженного пароля
+        SHA224_HASH = hashlib.sha224(PASSWORD.encode()).hexdigest().encode()
+        key_material = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=b'trojan-vpn-salt',
+            iterations=100000,
+        ).derive(PASSWORD.encode())
+        cipher = ChaCha20Poly1305(key_material)
+        
+        print(f"✅ Конфигурация из {CONFIG_FILE} загружена.")
+    except Exception as e:
+        print(f"❌ Ошибка чтения {CONFIG_FILE}: {e}")
+        input("\nНажмите Enter для выхода...")
+        sys.exit(1)
 
 # ============================
 
@@ -105,10 +144,8 @@ class VPNClientProtocol(asyncio.DatagramProtocol):
                     ip_packet = plaintext[65:]
                     self.adapter.write(ip_packet)
                     self.rx_bytes += len(ip_packet)
-                
                 elif cmd == CMD_PONG:
                     pass 
-                    
         except Exception:
             pass
 
@@ -116,18 +153,15 @@ class VPNClientProtocol(asyncio.DatagramProtocol):
         print(f"UDP ошибка: {exc}")
 
 def setup_wintun():
-    # 1. Проверка прав администратора
     if not is_admin():
-        print("❌ ОШИБКА: VPN требует прав администратора для изменения маршрутов!")
-        print("Пожалуйста, запусти файл от имени Администратора (Правая кнопка мыши -> Запуск от имени администратора).")
+        print("❌ ОШИБКА: VPN требует прав администратора!")
+        print("Запустите файл от имени Администратора.")
         sys.exit(1)
 
-    # 2. Автоопределение шлюза
     print("Поиск шлюза по умолчанию...")
     local_gw = get_default_gateway()
     if not local_gw:
-        print("❌ ОШИБКА: Не удалось автоматически определить IP вашего роутера (Wi-Fi/ETH).")
-        print("Убедитесь, что у вас работает обычный интернет, и перезапустите программу.")
+        print("❌ ОШИБКА: Не удалось определить IP вашего роутера.")
         sys.exit(1)
     print(f"✅ Автоматически найден шлюз: {local_gw}")
 
@@ -148,7 +182,6 @@ def setup_wintun():
     subprocess.run(f'route delete {SERVER_IP}', shell=True)
     subprocess.run(f'route delete 0.0.0.0', shell=True)
 
-    # Используем найденный local_gw вместо хардкода
     print(f"Добавление исключения для VPN-сервера {SERVER_IP} через {local_gw}...")
     subprocess.run(f'route add {SERVER_IP} mask 255.255.255.255 {local_gw} metric 5', shell=True)
 
@@ -210,13 +243,20 @@ async def read_from_wintun(adapter, transport, protocol):
             pass
 
 async def main():
+    # 1. Загружаем конфигурацию
+    load_config()
+
+    # 2. Настраиваем сеть
     adapter = setup_wintun()
+    
+    # 3. Запускаем транспорт
     loop = asyncio.get_running_loop()
     transport, protocol = await loop.create_datagram_endpoint(
         lambda: VPNClientProtocol(adapter),
         local_addr=('0.0.0.0', 0)
     )
 
+    # 4. Запускаем фоновые задачи
     asyncio.create_task(read_from_wintun(adapter, transport, protocol))
     asyncio.create_task(print_metrics(protocol))
     asyncio.create_task(send_ping(protocol))
@@ -229,9 +269,7 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         print("\nОстановка клиента...")
     except Exception as e:
-        # Ловим любую другую ошибку и выводим её
         print(f"\n❌ КРИТИЧЕСКАЯ ОШИБКА: {e}")
     finally:
-        # Эта строка не даст окну закрыться, пока ты не нажмешь Enter
         print("\nНажмите Enter, чтобы закрыть окно...")
         input()
