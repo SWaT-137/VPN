@@ -1,0 +1,7 @@
+{
+    "server_ip": "163.5.29.66",
+    "server_port": 65432,
+    "tun_ip": "10.0.0.3",
+    "password": "SWaT_2008",
+    "adapter_name": "PyVPN"
+}
