@@ -7,35 +7,29 @@ import os
 import sys
 import ctypes
 import socket
-import json # Добавлено для конфига
+import json
 from pytun_pmd3 import TunTapDevice
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
 
-# === НАСТРОЙКИ ПО УМОЛЧАНИЮ ===
+# Настройки по умолчанию
 CONFIG_FILE = "config.json"
-
-# Глобальные переменные, которые заполнятся из конфига
 SERVER_IP = '163.5.29.66'
 SERVER_PORT = 65432
-TUN_IP = '10.0.0.2'
-TUN_GW = '10.0.0.1'
 NETMASK = '255.255.255.0'
 MTU = 1280
 ADAPTER_NAME = "PyVPN"
 PASSWORD = "SWaT_2008"
 
-# Криптография (инициализируется позже, после загрузки пароля)
 SHA224_HASH = None
 cipher = None
-# ------------------------
 
 CMD_DATA = 0x00
 CMD_PING = 0x01
 CMD_PONG = 0x02
-
-# === ФУНКЦИИ АВТОМАТИЗАЦИИ ===
+CMD_IP_REQ = 0x03
+CMD_IP_ACK = 0x04
 
 def is_admin():
     try:
@@ -54,7 +48,7 @@ def get_default_gateway():
                 if len(parts) >= 5:
                     gateway = parts[2]
                     interface_ip = parts[3]
-                    if gateway != TUN_GW and interface_ip != TUN_IP:
+                    if not gateway.startswith("10.0.0") and not interface_ip.startswith("10.0.0"):
                         return gateway
         return None
     except Exception as e:
@@ -62,15 +56,13 @@ def get_default_gateway():
         return None
 
 def load_config():
-    global SERVER_IP, SERVER_PORT, TUN_IP, TUN_GW, NETMASK, MTU, ADAPTER_NAME, PASSWORD
-    global SHA224_HASH, cipher
+    global SERVER_IP, SERVER_PORT, ADAPTER_NAME, PASSWORD, SHA224_HASH, cipher
 
     if not os.path.exists(CONFIG_FILE):
         print(f"Файл {CONFIG_FILE} не найден. Создаю шаблон...")
         default_cfg = {
             "server_ip": "163.5.29.66",
             "server_port": 65432,
-            "tun_ip": "10.0.0.2",
             "password": "SWaT_2008",
             "adapter_name": "PyVPN"
         }
@@ -86,13 +78,9 @@ def load_config():
         
         SERVER_IP = cfg.get("server_ip", SERVER_IP)
         SERVER_PORT = cfg.get("server_port", SERVER_PORT)
-        TUN_IP = cfg.get("tun_ip", TUN_IP)
-        TUN_GW = TUN_IP[:-1] + '1' # Автоматически делаем шлюз (если IP 10.0.0.3, шлюз 10.0.0.1)
         PASSWORD = cfg.get("password", PASSWORD)
         ADAPTER_NAME = cfg.get("adapter_name", ADAPTER_NAME)
-        MTU = cfg.get("mtu", MTU)
 
-        # Инициализируем криптографию на основе загруженного пароля
         SHA224_HASH = hashlib.sha224(PASSWORD.encode()).hexdigest().encode()
         key_material = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
@@ -102,27 +90,30 @@ def load_config():
         ).derive(PASSWORD.encode())
         cipher = ChaCha20Poly1305(key_material)
         
-        print(f"✅ Конфигурация из {CONFIG_FILE} загружена.")
+        print(f"✅ Конфигурация загружена. Сервер: {SERVER_IP}:{SERVER_PORT}")
     except Exception as e:
         print(f"❌ Ошибка чтения {CONFIG_FILE}: {e}")
-        input("\nНажмите Enter для выхода...")
         sys.exit(1)
 
-# ============================
-
 class VPNClientProtocol(asyncio.DatagramProtocol):
-    def __init__(self, tun_device):
+    def __init__(self):
         self.transport = None
-        self.adapter = tun_device
+        self.adapter = None
         self.tx_bytes = 0
         self.rx_bytes = 0
         self.last_tx = 0
         self.last_rx = 0
         self.last_time = time.time()
+        
+        # Для рукопожатия
+        self.ip_received = asyncio.Event()
+        self.tun_ip = None
+        self.tun_gw = None
 
     def connection_made(self, transport):
         self.transport = transport
-        print("UDP транспорт готов (Trojan + Anti-DPI).")
+        print("UDP транспорт готов. Запрос IP-адреса у сервера...")
+        self.send_ip_request()
 
     def datagram_received(self, data, addr):
         if len(data) < 36: return
@@ -140,22 +131,39 @@ class VPNClientProtocol(asyncio.DatagramProtocol):
                 pkt_time = struct.unpack('!d', recv_time_bytes)[0]
                 if abs(time.time() - pkt_time) > 30: return
 
-                if cmd == CMD_DATA:
+                if cmd == CMD_IP_ACK:
+                    # Сервер выдал IP!
+                    self.tun_ip = socket.inet_ntoa(plaintext[65:69])
+                    self.tun_gw = socket.inet_ntoa(plaintext[69:73])
+                    print(f"✅ Получен IP от сервера: {self.tun_ip} (Шлюз: {self.tun_gw})")
+                    self.ip_received.set() # Разрешаем настройку адаптера
+
+                elif cmd == CMD_DATA:
+                    if not self.adapter: return
                     ip_packet = plaintext[65:]
                     self.adapter.write(ip_packet)
                     self.rx_bytes += len(ip_packet)
+                
                 elif cmd == CMD_PONG:
                     pass 
+                    
         except Exception:
             pass
+
+    def send_ip_request(self):
+        current_time = struct.pack('!d', time.time())
+        req_payload = SHA224_HASH + current_time + struct.pack('B', CMD_IP_REQ)
+        nonce = os.urandom(12)
+        ciphertext = cipher.encrypt(nonce, req_payload, None)
+        self.transport.sendto(nonce + ciphertext, (SERVER_IP, SERVER_PORT))
 
     def error_received(self, exc):
         print(f"UDP ошибка: {exc}")
 
-def setup_wintun():
+def setup_wintun(tun_ip, tun_gw):
     if not is_admin():
         print("❌ ОШИБКА: VPN требует прав администратора!")
-        print("Запустите файл от имени Администратора.")
+        input("\nНажмите Enter для выхода...")
         sys.exit(1)
 
     print("Поиск шлюза по умолчанию...")
@@ -163,15 +171,15 @@ def setup_wintun():
     if not local_gw:
         print("❌ ОШИБКА: Не удалось определить IP вашего роутера.")
         sys.exit(1)
-    print(f"✅ Автоматически найден шлюз: {local_gw}")
+    print(f"✅ Локальный шлюз: {local_gw}")
 
     print(f"Создание адаптера {ADAPTER_NAME}...")
     adapter = TunTapDevice(name=ADAPTER_NAME)
     adapter.mtu = MTU
     adapter.up()
 
-    print(f"Назначение IP {TUN_IP} и шлюза {TUN_GW}...")
-    subprocess.run(f'netsh interface ip set address name="{ADAPTER_NAME}" static {TUN_IP} {NETMASK} {TUN_GW}', shell=True)
+    print(f"Назначение IP {tun_ip} и шлюза {tun_gw}...")
+    subprocess.run(f'netsh interface ip set address name="{ADAPTER_NAME}" static {tun_ip} {NETMASK} {tun_gw}', shell=True)
     subprocess.run(f'netsh interface ip set dns name="{ADAPTER_NAME}" static 1.1.1.1 primary', shell=True)
     subprocess.run(f'netsh interface ipv4 set interface "{ADAPTER_NAME}" metric=1', shell=True)
 
@@ -185,10 +193,10 @@ def setup_wintun():
     print(f"Добавление исключения для VPN-сервера {SERVER_IP} через {local_gw}...")
     subprocess.run(f'route add {SERVER_IP} mask 255.255.255.255 {local_gw} metric 5', shell=True)
 
-    print("Принудительное перенаправление всего трафика через VPN...")
-    subprocess.run(f'route add 0.0.0.0 mask 0.0.0.0 {TUN_GW} metric 1', shell=True)
+    print("Перенаправление трафика через VPN...")
+    subprocess.run(f'route add 0.0.0.0 mask 0.0.0.0 {tun_gw} metric 1', shell=True)
 
-    print("✅ WinTun настроен. VPN активен.")
+    print("✅ VPN Активен!")
     return adapter
 
 def format_speed(bps):
@@ -198,6 +206,7 @@ def format_speed(bps):
 async def print_metrics(protocol):
     while True:
         await asyncio.sleep(2)
+        if not protocol.adapter: continue
         now = time.time()
         elapsed = now - protocol.last_time
         if elapsed > 0:
@@ -211,9 +220,10 @@ async def print_metrics(protocol):
 async def send_ping(protocol):
     while True:
         await asyncio.sleep(15)
+        if not protocol.tun_ip: continue
         try:
             current_time = struct.pack('!d', time.time())
-            vip_bytes = socket.inet_aton(TUN_IP)
+            vip_bytes = socket.inet_aton(protocol.tun_ip)
             ping_payload = SHA224_HASH + current_time + struct.pack('B', CMD_PING) + vip_bytes
             
             nonce = os.urandom(12)
@@ -223,6 +233,14 @@ async def send_ping(protocol):
             protocol.transport.sendto(frame, (SERVER_IP, SERVER_PORT))
         except Exception:
             pass
+
+async def ip_request_loop(protocol):
+    # Если пакет с IP потеряется, запрашиваем повторно каждые 3 секунды
+    while not protocol.tun_ip:
+        await asyncio.sleep(3)
+        if not protocol.tun_ip:
+            print("Повторный запрос IP...")
+            protocol.send_ip_request()
 
 async def read_from_wintun(adapter, transport, protocol):
     loop = asyncio.get_event_loop()
@@ -243,20 +261,26 @@ async def read_from_wintun(adapter, transport, protocol):
             pass
 
 async def main():
-    # 1. Загружаем конфигурацию
     load_config()
 
-    # 2. Настраиваем сеть
-    adapter = setup_wintun()
-    
-    # 3. Запускаем транспорт
     loop = asyncio.get_running_loop()
     transport, protocol = await loop.create_datagram_endpoint(
-        lambda: VPNClientProtocol(adapter),
+        lambda: VPNClientProtocol(),
         local_addr=('0.0.0.0', 0)
     )
 
-    # 4. Запускаем фоновые задачи
+    # Запускаем цикл запроса IP (на случай потери пакета)
+    asyncio.create_task(ip_request_loop(protocol))
+
+    # Ждем, пока сервер не пришлет IP
+    print("Ожидание ответа от сервера...")
+    await protocol.ip_received.wait()
+
+    # Получили IP! Настраиваем Windows
+    adapter = setup_wintun(protocol.tun_ip, protocol.tun_gw)
+    protocol.adapter = adapter
+
+    # Запускаем основные циклы
     asyncio.create_task(read_from_wintun(adapter, transport, protocol))
     asyncio.create_task(print_metrics(protocol))
     asyncio.create_task(send_ping(protocol))
