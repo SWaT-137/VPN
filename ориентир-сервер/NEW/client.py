@@ -23,12 +23,10 @@ LOCAL_GW = "192.168.1.1" # IP ВАШЕГО РОУТЕРА!
 PASSWORD = "SWaT_2008"
 SHA224_HASH = hashlib.sha224(PASSWORD.encode()).hexdigest().encode()
 
-# Генерируем ключ шифрования из пароля для защиты от DPI
-# В реальном Trojan ключом выступает TLS, здесь мы используем ChaCha20
 key_material = PBKDF2HMAC(
     algorithm=hashes.SHA256(),
     length=32,
-    salt=b'trojan-vpn-salt', # Статическая соль для совпадения ключей
+    salt=b'trojan-vpn-salt',
     iterations=100000,
 ).derive(PASSWORD.encode())
 cipher = ChaCha20Poly1305(key_material)
@@ -41,28 +39,33 @@ class VPNClientProtocol(asyncio.DatagramProtocol):
 
     def connection_made(self, transport):
         self.transport = transport
-        print("UDP транспорт готов (Trojan + Anti-DPI Encryption).")
+        print("UDP транспорт готов (Anti-Replay / Active Probing Defense).")
 
     def datagram_received(self, data, addr):
-        # Структура: [Nonce 12b][Encrypted([SHA224][IP-пакет]) + Tag 16b]
-        if len(data) < 28: # 12 + 16 минимум
+        if len(data) < 36: # 12 (nonce) + 16 (tag) + 8 (min payload)
             return
             
         try:
             nonce = data[:12]
             ciphertext = data[12:]
             
-            # Расшифровываем
             plaintext = cipher.decrypt(nonce, ciphertext, None)
             
-            # Проверяем Trojan-хеш (который теперь скрыт внутри шифрования!)
             recv_hash = plaintext[:56]
-            ip_packet = plaintext[56:]
+            recv_time_bytes = plaintext[56:64]
+            ip_packet = plaintext[64:]
 
             if recv_hash == SHA224_HASH:
+                # Проверяем метку времени (защита от Replay)
+                try:
+                    pkt_time = struct.unpack('!d', recv_time_bytes)[0]
+                    if abs(time.time() - pkt_time) > 30: # Если пакет старше 30 секунд - отбрасываем
+                        return
+                except:
+                    return
+
                 self.adapter.write(ip_packet)
         except Exception:
-            # Ошибка расшифровки - пакет не наш
             pass
 
     def error_received(self, exc):
@@ -72,50 +75,44 @@ def setup_wintun():
     print(f"Создание адаптера {ADAPTER_NAME}...")
     adapter = TunTapDevice(name=ADAPTER_NAME)
     adapter.mtu = MTU
-
-    print("Поднятие WinTun-адаптера...")
     adapter.up()
 
     print(f"Назначение IP {TUN_IP} и шлюза {TUN_GW}...")
     subprocess.run(f'netsh interface ip set address name="{ADAPTER_NAME}" static {TUN_IP} {NETMASK} {TUN_GW}', shell=True)
     subprocess.run(f'netsh interface ip set dns name="{ADAPTER_NAME}" static 1.1.1.1 primary', shell=True)
-    
-    # Устанавливаем метрику 1 для VPN-адаптера, чтобы Windows предпочитала его
     subprocess.run(f'netsh interface ipv4 set interface "{ADAPTER_NAME}" metric=1', shell=True)
 
     print("Ожидание применения настроек Windows (3 сек)...")
     time.sleep(3)
 
-    # --- ОЧИСТКА СТАРЫХ МАРШРУТОВ (чтобы не было ошибки "Объект уже существует") ---
     print("Очистка старых маршрутов...")
     subprocess.run(f'route delete {SERVER_IP}', shell=True)
-    subprocess.run(f'route delete 0.0.0.0', shell=True) # Удаляет дефолтный шлюз, чтобы прописать свой
-    # -------------------------------------------------------------------------------
+    subprocess.run(f'route delete 0.0.0.0', shell=True)
 
     print(f"Добавление исключения для VPN-сервера {SERVER_IP}...")
-    # ВАЖНО: Указываем метрику 5, чтобы этот маршрут был приоритетнее для сервера, чем VPN-туннель
     subprocess.run(f'route add {SERVER_IP} mask 255.255.255.255 {LOCAL_GW} metric 5', shell=True)
 
     print("Принудительное перенаправление всего трафика через VPN...")
-    # ВАЖНО: Указываем метрику 1, чтобы весь интернет шел через TUN
     subprocess.run(f'route add 0.0.0.0 mask 0.0.0.0 {TUN_GW} metric 1', shell=True)
 
     print("WinTun настроен.")
     return adapter
+
 async def read_from_wintun(adapter, transport):
     loop = asyncio.get_event_loop()
     while True:
         try:
             packet = await loop.run_in_executor(None, adapter.read)
             if packet:
-                # Формируем Trojan-подобный пакет: [Хеш 56 байт][IP-пакет]
-                trojan_payload = SHA224_HASH + packet
+                # Добавляем метку времени (8 байт, double precision)
+                current_time = struct.pack('!d', time.time())
                 
-                # Шифруем его, чтобы DPI не видел статичный хеш
+                # Новый формат: [Хеш 56b][Время 8b][IP-пакет]
+                trojan_payload = SHA224_HASH + current_time + packet
+                
                 nonce = os.urandom(12)
                 ciphertext = cipher.encrypt(nonce, trojan_payload, None)
                 
-                # Отправляем: [Nonce][Зашифрованный Trojan-пакет]
                 frame = nonce + ciphertext
                 transport.sendto(frame, (SERVER_IP, SERVER_PORT))
         except Exception:
