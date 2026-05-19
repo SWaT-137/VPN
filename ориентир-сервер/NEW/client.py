@@ -246,7 +246,8 @@ async def read_from_wintun(adapter, transport, protocol):
     loop = asyncio.get_event_loop()
     while True:
         try:
-            packet = await loop.run_in_executor(None, adapter.read)
+            # Изменили MTU на 65535 для буфера чтения WinTUN
+            packet = await loop.run_in_executor(None, adapter.read, 65535) 
             if packet:
                 current_time = struct.pack('!d', time.time())
                 trojan_payload = SHA224_HASH + current_time + struct.pack('B', CMD_DATA) + packet
@@ -264,15 +265,21 @@ async def main():
     load_config()
 
     loop = asyncio.get_running_loop()
+    
+    # Создаем кастомный UDP сокет с БОЛЬШИМИ буферами (8 МБ)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024 * 1024 * 8) # 8 MB на прием
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024 * 1024 * 8) # 8 MB на отправку
+    sock.bind(('0.0.0.0', 0)) # Случайный исходящий порт
+    
     transport, protocol = await loop.create_datagram_endpoint(
         lambda: VPNClientProtocol(),
-        local_addr=('0.0.0.0', 0)
+        sock=sock # Передаем наш настроенный сокет
     )
 
-    # Запускаем цикл запроса IP (на случай потери пакета)
+    # Запускаем цикл запроса IP
     asyncio.create_task(ip_request_loop(protocol))
 
-    # Ждем, пока сервер не пришлет IP
     print("Ожидание ответа от сервера...")
     await protocol.ip_received.wait()
 
