@@ -34,6 +34,7 @@ CMD_PING = 0x01
 CMD_PONG = 0x02
 CMD_IP_REQ = 0x03
 CMD_IP_ACK = 0x04
+CMD_DISCONNECT = 0x05 # ДОБАВИТЬ ЭТО
 
 # === ГЛОБАЛЬНОЕ СОСТОЯНИЕ ===
 vpn_loop = None
@@ -316,14 +317,32 @@ def update_tray_status():
             tray_icon.title = "PyVPN: Нет связи"
 
 def cleanup_vpn():
+    global is_connected
     log_message("Очистка маршрутов и завершение...")
+    
+    # 1. Отправляем серверу пакет об отключении (если есть транспорт)
+    if vpn_protocol and vpn_protocol.transport and is_connected:
+        try:
+            current_time = struct.pack('!d', time.time())
+            # Формируем пакет отключения
+            disc_payload = SHA224_HASH + current_time + struct.pack('B', CMD_DISCONNECT)
+            nonce = os.urandom(12)
+            ciphertext = cipher.encrypt(nonce, disc_payload, None)
+            # Отправляем 3 раза для надежности (UDP может потерять пакет)
+            for _ in range(3):
+                vpn_protocol.transport.sendto(nonce + ciphertext, (SERVER_IP, SERVER_PORT))
+            log_message("Сервер уведомлен об отключении.")
+        except Exception as e:
+            log_message(f"Не удалось отправить пакет отключения: {e}")
+
+    # 2. Очищаем маршруты
     try:
         subprocess.run(f'route delete 0.0.0.0 mask 0.0.0.0 {TUN_GW}', shell=True)
         subprocess.run(f'route delete {SERVER_IP}', shell=True)
         if vpn_protocol and vpn_protocol.adapter:
             vpn_protocol.adapter.down()
     except Exception as e:
-        log_message(f"Ошибка при очистке: {e}")
+        log_message(f"Ошибка при очистке маршрутов: {e}")
 
 def on_exit(icon, item):
     cleanup_vpn()
