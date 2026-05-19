@@ -40,11 +40,10 @@ vpn_loop = None
 vpn_protocol = None
 is_connected = False
 tray_icon = None
-TUN_GW = '10.0.0.1' # Вынесли шлюз в глобальную переменную для очистки
+TUN_GW = '10.0.0.1'
 
 # === ЛОГИРОВАНИЕ ===
 def log_message(msg):
-    """Пишет сообщения в лог-файл с таймстемпом"""
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         timestamp = time.strftime("%H:%M:%S")
         f.write(f"[{timestamp}] {msg}\n")
@@ -88,7 +87,7 @@ def load_config():
         default_cfg = {
             "server_ip": "163.5.29.66",
             "server_port": 65432,
-            "password": "SWaT_2008",
+            "password": "a1d611ba-86d2-409d-84e0-2e5013201189", # Замени на свой UUID
             "adapter_name": "PyVPN"
         }
         with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
@@ -104,13 +103,16 @@ def load_config():
         ADAPTER_NAME = cfg.get("adapter_name", ADAPTER_NAME)
 
         SHA224_HASH = hashlib.sha224(PASSWORD.encode()).hexdigest().encode()
+        
+        SERVER_SECRET = "SWaT_2008" # <--- ДОЛЖЕН СОВПАДАТЬ С СЕРВЕРОМ!
         key_material = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
             length=32,
             salt=b'trojan-vpn-salt',
             iterations=100000,
-        ).derive(PASSWORD.encode())
+        ).derive(SERVER_SECRET.encode())
         cipher = ChaCha20Poly1305(key_material)
+        
         log_message("Конфигурация загружена.")
         return True
     except Exception as e:
@@ -128,7 +130,8 @@ class VPNClientProtocol(asyncio.DatagramProtocol):
         self.last_time = time.time()
         self.ip_received = asyncio.Event()
         self.tun_ip = None
-        self.tun_gw_local = None # Локальная копия шлюза
+        self.tun_gw_local = None
+        self.last_recv_time = time.time()
 
     def connection_made(self, transport):
         self.transport = transport
@@ -149,11 +152,13 @@ class VPNClientProtocol(asyncio.DatagramProtocol):
                 pkt_time = struct.unpack('!d', recv_time_bytes)[0]
                 if abs(time.time() - pkt_time) > 30: return
 
+                self.last_recv_time = time.time()
+                
                 if cmd == CMD_IP_ACK:
                     self.tun_ip = socket.inet_ntoa(plaintext[65:69])
                     self.tun_gw_local = socket.inet_ntoa(plaintext[69:73])
                     is_connected = True
-                    update_tray_icon()
+                    update_tray_status()
                     self.ip_received.set()
                 elif cmd == CMD_DATA:
                     if not self.adapter: return
@@ -181,15 +186,16 @@ def setup_wintun(tun_ip, tun_gw):
     adapter.mtu = MTU
     adapter.up()
 
+    subprocess.run(f'netsh interface ip set address name="{ADAPTER_NAME}" dhcp', shell=True)
+    time.sleep(1)
+
     subprocess.run(f'netsh interface ip set address name="{ADAPTER_NAME}" static {tun_ip} {NETMASK} {tun_gw}', shell=True)
     subprocess.run(f'netsh interface ip set dns name="{ADAPTER_NAME}" static 1.1.1.1 primary', shell=True)
     subprocess.run(f'netsh interface ipv4 set interface "{ADAPTER_NAME}" metric=1', shell=True)
     time.sleep(3)
 
-    # ИСПРАВЛЕНО: Мы НЕ удаляем основной маршрут 0.0.0.0 пользователя!
-    # Мы просто добавляем свой с метрикой 1 (высший приоритет). 
-    # При отключении мы удалим только этот маршрут, и интернет вернется на родной шлюз.
     subprocess.run(f'route delete {SERVER_IP}', shell=True)
+    subprocess.run(f'route delete 0.0.0.0 mask 0.0.0.0 {tun_gw}', shell=True)
     subprocess.run(f'route add {SERVER_IP} mask 255.255.255.255 {local_gw} metric 5', shell=True)
     subprocess.run(f'route add 0.0.0.0 mask 0.0.0.0 {tun_gw} metric 1', shell=True)
     
@@ -197,9 +203,16 @@ def setup_wintun(tun_ip, tun_gw):
     return adapter
 
 async def send_ping(protocol):
+    global is_connected
     while True:
         await asyncio.sleep(15)
         if protocol.tun_ip:
+            if time.time() - protocol.last_recv_time > 60:
+                if is_connected:
+                    is_connected = False
+                    update_tray_status()
+                    log_message("ОШИБКА: Сервер не отвечает дольше 60 секунд.")
+            
             try:
                 current_time = struct.pack('!d', time.time())
                 vip_bytes = socket.inet_aton(protocol.tun_ip)
@@ -244,7 +257,7 @@ async def log_metrics(protocol):
                 protocol.last_time = now
 
 async def vpn_main():
-    global vpn_protocol
+    global vpn_protocol, TUN_GW
     log_message("Запуск VPN цикла...")
     loop = asyncio.get_running_loop()
     
@@ -261,8 +274,6 @@ async def vpn_main():
     await protocol.ip_received.wait()
     log_message(f"Получен IP: {protocol.tun_ip}")
 
-    # Сохраняем выданный шлюз в глобальную переменную для функции очистки
-    global TUN_GW
     TUN_GW = protocol.tun_gw_local
 
     adapter = setup_wintun(protocol.tun_ip, protocol.tun_gw_local)
@@ -283,32 +294,30 @@ async def vpn_main():
 
 # === ЛОГИКА GUI (ТРЕЙ) ===
 
-def create_icon_image(color):
+def create_static_icon():
+    # Рисуем простую синюю иконку, которая никогда не меняется
     width = 64
     height = 64
     image = Image.new('RGB', (width, height), (30, 30, 30))
     dc = ImageDraw.Draw(image)
-    dc.rectangle([8, 8, width-8, height-8], fill=color, outline='white', width=2)
+    dc.rectangle([8, 8, width-8, height-8], fill=(0, 120, 215), outline='white', width=2)
     return image
 
-def update_tray_icon():
-    global tray_icon
+def update_tray_status():
+    # Обновляем только текст при наведении и показываем уведомление
     if tray_icon:
         if is_connected:
-            tray_icon.icon = create_icon_image((0, 255, 0))
             tray_icon.title = "PyVPN: Подключено"
             try:
                 tray_icon.notify("VPN успешно подключен", "PyVPN")
             except Exception:
                 pass
         else:
-            tray_icon.icon = create_icon_image((255, 0, 0))
-            tray_icon.title = "PyVPN: Отключено"
+            tray_icon.title = "PyVPN: Нет связи"
 
 def cleanup_vpn():
     log_message("Очистка маршрутов и завершение...")
     try:
-        # ИСПРАВЛЕНО: Удаляем ТОЛЬКО маршрут VPN-шлюза, не трогая дефолтный маршрут роутера!
         subprocess.run(f'route delete 0.0.0.0 mask 0.0.0.0 {TUN_GW}', shell=True)
         subprocess.run(f'route delete {SERVER_IP}', shell=True)
         if vpn_protocol and vpn_protocol.adapter:
@@ -330,6 +339,7 @@ def open_log(icon, item):
         os.startfile(LOG_FILE)
 
 def get_status_text(item):
+    # Динамический текст в меню по правому клику
     return "Статус: Подключено ✅" if is_connected else "Статус: Подключение..."
 
 def setup_tray():
@@ -339,8 +349,7 @@ def setup_tray():
         pystray.MenuItem("Открыть лог", open_log),
         pystray.MenuItem("Выход", on_exit)
     )
-    tray_icon = pystray.Icon("PyVPN", create_icon_image((255, 165, 0)), "PyVPN: Запуск...", menu=menu)
-    # ИСПРАВЛЕНО: запускаем icon.run() отдельно, после старта VPN потока
+    tray_icon = pystray.Icon("PyVPN", create_static_icon(), "PyVPN: Запуск...", menu=menu)
     tray_icon.run()
 
 def start_vpn_thread():
@@ -359,20 +368,12 @@ if __name__ == '__main__':
         if not load_config():
             sys.exit(1)
 
-        # ИСПРАВЛЕНО: Создаем объект трея ДО запуска VPN потока
-        menu = pystray.Menu(
-            pystray.MenuItem(get_status_text, None, enabled=False),
-            pystray.MenuItem("Открыть лог", open_log),
-            pystray.MenuItem("Выход", on_exit)
-        )
-        tray_icon = pystray.Icon("PyVPN", create_icon_image((255, 165, 0)), "PyVPN: Запуск...", menu=menu)
-
         # Запускаем VPN в фоне
         vpn_thread = threading.Thread(target=start_vpn_thread, daemon=True)
         vpn_thread.start()
 
-        # Запускаем цикл отрисовки GUI (блокирует основной поток)
-        tray_icon.run()
+        # Запускаем статичный трей (блокирует основной поток)
+        setup_tray()
         
     except Exception as e:
         with open("error.log", "w") as f:
