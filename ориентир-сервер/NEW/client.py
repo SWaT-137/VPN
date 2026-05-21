@@ -4,6 +4,7 @@ import subprocess
 import hashlib
 import time
 import os
+
 import sys
 import ctypes
 import socket
@@ -17,8 +18,9 @@ import pystray
 from PIL import Image, ImageDraw
 
 # === НАСТРОЙКИ ===
-CONFIG_FILE = "config.json"
-LOG_FILE = "client.log"
+WORK_DIR = os.path.join(os.getenv('LOCALAPPDATA'), 'PyVPN')
+CONFIG_FILE = os.path.join(WORK_DIR, "config.json")
+LOG_FILE = os.path.join(WORK_DIR, "client.log")
 SERVER_IP = '163.5.29.66'
 SERVER_PORT = 65432
 NETMASK = '255.255.255.0'
@@ -40,6 +42,7 @@ CMD_DISCONNECT = 0x05 # ДОБАВИТЬ ЭТО
 vpn_loop = None
 vpn_protocol = None
 is_connected = False
+connection_failed = False # Новая переменная: сервер не отвечает
 tray_icon = None
 TUN_GW = '10.0.0.1'
 
@@ -63,7 +66,12 @@ def is_admin():
         return ctypes.windll.shell32.IsUserAnAdmin()
     except:
         return False
-
+def setup_working_dir():
+    """Создает папку в AppData для конфигов и логов"""
+    try:
+        os.makedirs(WORK_DIR, exist_ok=True)
+    except Exception:
+        pass # Если не удалось, файлы создадутся рядом с exe
 def get_default_gateway():
     try:
         result = subprocess.run("route print -4 0.0.0.0", capture_output=True, text=True, shell=True)
@@ -159,6 +167,7 @@ class VPNClientProtocol(asyncio.DatagramProtocol):
                     self.tun_ip = socket.inet_ntoa(plaintext[65:69])
                     self.tun_gw_local = socket.inet_ntoa(plaintext[69:73])
                     is_connected = True
+                    connection_failed = False # Сервер ответил, сбрасываем ошибку!
                     update_tray_status()
                     self.ip_received.set()
                 elif cmd == CMD_DATA:
@@ -238,10 +247,18 @@ async def read_from_wintun(adapter, transport, protocol):
         except Exception: pass
 
 async def ip_request_loop(protocol):
+    global connection_failed
+    attempts = 0
     while not protocol.tun_ip:
         await asyncio.sleep(3)
         if not protocol.tun_ip:
             protocol.send_ip_request()
+            attempts += 1
+            # Если сделали 5 попыток (15 секунд), а ответа нет:
+            if attempts >= 5 and not connection_failed:
+                connection_failed = True
+                update_tray_status() # Обновляем текст в трее
+                log_message("ОШИБКА: Сервер недоступен, неверный пароль или проблемы с сетью.")
 
 async def log_metrics(protocol):
     while True:
@@ -305,16 +322,22 @@ def create_static_icon():
     return image
 
 def update_tray_status():
-    # Обновляем только текст при наведении и показываем уведомление
     if tray_icon:
         if is_connected:
             tray_icon.title = "PyVPN: Подключено"
             try:
                 tray_icon.notify("VPN успешно подключен", "PyVPN")
-            except Exception:
-                pass
+            except Exception: pass
+        elif connection_failed:
+            tray_icon.title = "PyVPN: Ошибка подключения"
+            try:
+                # Показываем красное уведомление об ошибке
+                tray_icon.notify("Сервер недоступен или неверный пароль", "PyVPN Ошибка")
+            except Exception: pass
         else:
-            tray_icon.title = "PyVPN: Нет связи"
+            tray_icon.title = "PyVPN: Подключение..."
+
+
 
 def cleanup_vpn():
     global is_connected
@@ -357,14 +380,26 @@ def open_log(icon, item):
         open(LOG_FILE, 'w').close()
         os.startfile(LOG_FILE)
 
+def open_config_folder(icon, item):
+    """Открывает папку, в которой лежит config.json"""
+    if os.path.exists(WORK_DIR):
+        os.startfile(WORK_DIR)
+    else:
+        log_message(f"ОШИБКА: Папка {WORK_DIR} не найдена!")
+
 def get_status_text(item):
-    # Динамический текст в меню по правому клику
-    return "Статус: Подключено ✅" if is_connected else "Статус: Подключение..."
+    if is_connected:
+        return "Статус: Подключено ✅"
+    elif connection_failed:
+        return "Статус: Сервер недоступен ❌"
+    else:
+        return "Статус: Подключение..."
 
 def setup_tray():
     global tray_icon
     menu = pystray.Menu(
         pystray.MenuItem(get_status_text, None, enabled=False),
+        pystray.MenuItem("Открыть папку", open_config_folder), # НОВАЯ КНОПКА
         pystray.MenuItem("Открыть лог", open_log),
         pystray.MenuItem("Выход", on_exit)
     )
@@ -380,18 +415,23 @@ def start_vpn_thread():
 
 if __name__ == '__main__':
     try:
+        # ШАГ 1: Создаем рабочую папку в AppData
+        setup_working_dir()
+
+        # ШАГ 2: Проверка прав админа
         if not is_admin():
             ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, " ".join(sys.argv), None, 1)
             sys.exit(0)
 
+        # ШАГ 3: Загрузка конфига
         if not load_config():
             sys.exit(1)
 
-        # Запускаем VPN в фоне
+        # ШАГ 4: Запуск VPN
         vpn_thread = threading.Thread(target=start_vpn_thread, daemon=True)
         vpn_thread.start()
 
-        # Запускаем статичный трей (блокирует основной поток)
+        # ШАГ 5: Запуск статичного трея
         setup_tray()
         
     except Exception as e:
