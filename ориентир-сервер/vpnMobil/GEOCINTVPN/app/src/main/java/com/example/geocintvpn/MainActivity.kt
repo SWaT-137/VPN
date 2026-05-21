@@ -1,9 +1,6 @@
 package com.example.geocintvpn
 
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import android.app.Activity
-import androidx.compose.ui.graphics.Brush
 import android.app.ActivityManager
 import android.content.Context
 import android.net.TrafficStats
@@ -17,15 +14,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material.icons.outlined.PowerSettingsNew
-import androidx.compose.material3.Surface
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -35,10 +26,18 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.outlined.PowerSettingsNew
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -51,8 +50,6 @@ import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
@@ -68,9 +65,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.foundation.background
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -119,6 +116,7 @@ class MainActivity : ComponentActivity() {
 fun VPNScreen() {
     val context = LocalContext.current
     val activity = context as? Activity ?: return
+    val clipboardManager = LocalClipboardManager.current // Для кнопки "Вставить"
 
     val backgroundBrush = Brush.verticalGradient(
         colors = listOf(Color(0xFF1A1A2E), DarkBg)
@@ -127,21 +125,28 @@ fun VPNScreen() {
     val prefs = context.getSharedPreferences("vpn_prefs", Context.MODE_PRIVATE)
     var subLink by remember { mutableStateOf(prefs.getString("sub_link", "") ?: "") }
 
+    // История ссылок
+    var linkHistory by remember {
+        mutableStateOf(prefs.getStringSet("link_history", emptySet())?.toList() ?: emptyList())
+    }
+
     var isConnected by remember { mutableStateOf(false) }
     var statusText by remember { mutableStateOf("Отключено") }
     var pendingConfig by remember { mutableStateOf<String?>(null) }
 
     var showSettingsDialog by remember { mutableStateOf(false) }
     var showStatsDialog by remember { mutableStateOf(false) }
+    var showCustomToast by remember { mutableStateOf(false) }
+    var customToastText by remember { mutableStateOf("") }
 
-    // --- ИЗМЕНЕНИЯ ДЛЯ СТАТИСТИКИ: Переменные текущей сессии ---
+    // --- СТАТИСТИКА: Переменные текущей сессии ---
     var sessionSeconds by remember { mutableIntStateOf(0) }
     var baseRxBytes by remember { mutableLongStateOf(0L) }
     var baseTxBytes by remember { mutableLongStateOf(0L) }
     var sessionDown by remember { mutableLongStateOf(0L) }
     var sessionUp by remember { mutableLongStateOf(0L) }
 
-    // --- ИЗМЕНЕНИЯ ДЛЯ СТАТИСТИКИ: Переменные общих накопленных значений ---
+    // --- СТАТИСТИКА: Переменные общих накопленных значений ---
     var totalSeconds by remember { mutableLongStateOf(prefs.getLong("stat_total_seconds", 0L)) }
     var totalDown by remember { mutableLongStateOf(prefs.getLong("stat_total_down", 0L)) }
     var totalUp by remember { mutableLongStateOf(prefs.getLong("stat_total_up", 0L)) }
@@ -149,6 +154,22 @@ fun VPNScreen() {
 
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val coroutineScope = rememberCoroutineScope()
+
+    // Функция сохранения в историю (макс 5 штук)
+    // Функция сохранения в историю
+    fun saveToHistory(link: String) {
+        if (link.isBlank()) return
+        val updatedHistory = (listOf(link) + linkHistory).distinct().take(5)
+        linkHistory = updatedHistory
+        prefs.edit().putStringSet("link_history", updatedHistory.toSet()).apply()
+    }
+
+    // ДОБАВИТЬ ЭТУ ФУНКЦИЮ:
+    fun removeFromHistory(linkToRemove: String) {
+        val updatedHistory = linkHistory.filter { it != linkToRemove }
+        linkHistory = updatedHistory
+        prefs.edit().putStringSet("link_history", updatedHistory.toSet()).apply()
+    }
 
     LaunchedEffect(Unit) {
         val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
@@ -158,7 +179,7 @@ fun VPNScreen() {
         }
         if (isServiceRunning) {
             isConnected = true
-            statusText = "Подключено (RU трафик в обход VPN)"
+            statusText = "Подключено"
             baseRxBytes = TrafficStats.getUidRxBytes(Process.myUid())
             baseTxBytes = TrafficStats.getUidTxBytes(Process.myUid())
         }
@@ -190,9 +211,9 @@ fun VPNScreen() {
             pendingConfig?.let {
                 startVpnConnection(activity, it) { success ->
                     if (success) {
-                        // --- ИЗМЕНЕНИЯ ДЛЯ СТАТИСТИКИ: +1 подключение ---
                         totalConns++
                         prefs.edit().putInt("stat_total_conns", totalConns).apply()
+                        saveToHistory(subLink) // Сохраняем при успехе
 
                         isConnected = true
                         statusText = "Подключено"
@@ -209,16 +230,26 @@ fun VPNScreen() {
         }
     }
 
+    fun showMyToast(message: String) {
+        customToastText = message
+        showCustomToast = true
+        coroutineScope.launch {
+            delay(2000)
+            showCustomToast = false
+        }
+    }
+
     fun onToggle(checked: Boolean) {
         if (checked) {
             if (subLink.isBlank()) {
-                Toast.makeText(context, "Откройте меню и укажите ссылку", Toast.LENGTH_SHORT).show()
+                showMyToast("\uD83D\uDD17 Откройте меню и укажите ссылку \uD83D\uDD17")
                 return
             }
             statusText = "Подключение (настройка маршрутизации)..."
             CoroutineScope(Dispatchers.IO).launch {
                 try {
-                    val vlessConfig = MarzbanApi.getConfigFromSubLink(subLink.trim())
+                    // ИСПОЛЬЗУЕМ НОВУЮ ФУНКЦИЮ (поддерживает и vless:// и https://)
+                    val vlessConfig = MarzbanApi.getConfigFromInput(subLink.trim())
                     withContext(Dispatchers.Main) {
                         val vpnIntent = VpnService.prepare(activity)
                         if (vpnIntent != null) {
@@ -227,9 +258,9 @@ fun VPNScreen() {
                         } else {
                             startVpnConnection(activity, vlessConfig) { success ->
                                 if (success) {
-                                    // --- ИЗМЕНЕНИЯ ДЛЯ СТАТИСТИКИ: +1 подключение ---
                                     totalConns++
                                     prefs.edit().putInt("stat_total_conns", totalConns).apply()
+                                    saveToHistory(subLink) // Сохраняем при успехе
 
                                     isConnected = true
                                     statusText = "Подключено"
@@ -245,7 +276,6 @@ fun VPNScreen() {
                 }
             }
         } else {
-            // --- ИЗМЕНЕНИЯ ДЛЯ СТАТИСТИКИ: Сохраняем результаты сессии перед отключением ---
             totalSeconds += sessionSeconds
             totalDown += sessionDown
             totalUp += sessionUp
@@ -279,7 +309,11 @@ fun VPNScreen() {
                     selected = false,
                     onClick = {
                         coroutineScope.launch { drawerState.close() }
-                        showSettingsDialog = true
+                        if (isConnected) {
+                            showMyToast("⚠️ Сначала выключите VPN")
+                        } else {
+                            showSettingsDialog = true
+                        }
                     },
                     modifier = Modifier.padding(horizontal = 12.dp)
                 )
@@ -295,11 +329,13 @@ fun VPNScreen() {
             }
         }
     ) {
+        // ГЛАВНЫЙ КОНТЕЙНЕР (Здесь лежит градиент на всю страницу)
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(backgroundBrush)
         ) {
+            // Кнопка меню (привязана к верхнему левому углу Box'а)
             IconButton(
                 onClick = { coroutineScope.launch { drawerState.open() } },
                 modifier = Modifier
@@ -309,7 +345,7 @@ fun VPNScreen() {
                 Icon(Icons.Filled.Menu, contentDescription = "Открыть меню", tint = Color.White)
             }
 
-
+            // ОСНОВНОЙ КОНТЕНТ (Кнопка, статус, карточки)
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -317,29 +353,25 @@ fun VPNScreen() {
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
             ) {
-                // 1. Анимация цвета (плавный переход от серого к зеленому)
                 val buttonColor by animateColorAsState(
-                    targetValue = if (isConnected) GreenPrimary else Color(0xFF3A3A47), // #3A3A47 - красивый темно-серый
-                    animationSpec = tween(durationMillis = 300), // скорость переключения
+                    targetValue = if (isConnected) GreenPrimary else Color(0xFF3A3A47),
+                    animationSpec = tween(durationMillis = 300),
                     label = "buttonColor"
                 )
 
-                // 2. Сама кнопка
                 Surface(
-                    onClick = { onToggle(!isConnected) }, // Инвертируем состояние при клике
-                    modifier = Modifier.size(200.dp), // Размер кнопки (поиграйте цифрой, если надо больше/меньше)
-                    shape = CircleShape, // Делаем идеальный круг
-                    color = buttonColor, // Подставляем наш анимированный цвет
-                    shadowElevation = if (isConnected) 16.dp else 4.dp // Красивый эффект: когда включено - тень больше
+                    onClick = { onToggle(!isConnected) },
+                    modifier = Modifier.size(200.dp),
+                    shape = CircleShape,
+                    color = buttonColor,
+                    shadowElevation = if (isConnected) 16.dp else 4.dp
                 ) {
-                    Box(
-                        contentAlignment = Alignment.Center // Центрируем иконку внутри круга
-                    ) {
+                    Box(contentAlignment = Alignment.Center) {
                         Icon(
-                            imageVector = Icons.Outlined.PowerSettingsNew, // Иконка кнопки питания
+                            imageVector = Icons.Outlined.PowerSettingsNew,
                             contentDescription = "Включить VPN",
-                            tint = Color.White, // Белая иконка
-                            modifier = Modifier.size(56.dp) // Размер иконки внутри круга
+                            tint = Color.White,
+                            modifier = Modifier.size(96.dp)
                         )
                     }
                 }
@@ -358,21 +390,41 @@ fun VPNScreen() {
 
                 Card(
                     modifier = Modifier.padding(horizontal = 40.dp),
-                    colors = CardDefaults.cardColors(containerColor = DarkSurface), // Цвет как у меню
+                    colors = CardDefaults.cardColors(containerColor = DarkSurface),
                     shape = RoundedCornerShape(16.dp)
                 ) {
                     Column(
-                        modifier = Modifier.padding(16.dp), // Отступы внутри карточки
+                        modifier = Modifier.padding(16.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Text("\uD83D\uDCC9 Полученно: ${formatBytes(sessionDown)}\uD83D\uDCC9", color = GrayText, fontSize = 14.sp)
-                        Text("\uD83D\uDCC8 Отпарвленно: ${formatBytes(sessionUp)}\uD83D\uDCC8", color = GrayText, fontSize = 14.sp)
-                        Text("⏳ Время сессии: $sessionTimeString⏳", color = GrayText, fontSize = 14.sp)
+                        Text("\uD83D\uDCC9 Полученно: ${formatBytes(sessionDown)} \uD83D\uDCC9", color = GrayText, fontSize = 14.sp)
+                        Text("\uD83D\uDCC8 Отправлено: ${formatBytes(sessionUp)} \uD83D\uDCC8", color = GrayText, fontSize = 14.sp)
+                        Text("⏳ Время сессии: $sessionTimeString ⏳", color = GrayText, fontSize = 14.sp)
                     }
                 }
+            } // <--- ЗДЕСЬ ЗАКАНЧИВАЕТСЯ COLUMN. Всё что ниже - вне её!
+
+            // НАША ВСПЛЫВАЮЩАЯ КАРТОЧКА (Находится внутри Box, но ВНЕ Column)
+            if (showCustomToast) {
+                Card(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter) // Приклеиваем к низу экрана
+                        .padding(bottom = 32.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF444444))
+                ) {
+                    Text(
+                        text = customToastText,
+                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp),
+                        color = Color.White,
+                        fontSize = 14.sp,
+                        textAlign = TextAlign.Center
+                    )
+                }
             }
-        }
-    }
+        } // <--- ЗДЕСЬ ЗАКАНЧИВАЕТСЯ BOX
+    } // <--- ЗДЕСЬ ЗАКАНЧИВАЕТСЯ NAVIGATION DRAWER
+
 
     if (showSettingsDialog) {
         AlertDialog(
@@ -381,26 +433,87 @@ fun VPNScreen() {
             shape = RoundedCornerShape(16.dp),
             title = { Text("⚙️ Настройки", color = Color.White, fontWeight = FontWeight.Bold) },
             text = {
-                OutlinedTextField(
-                    value = subLink,
-                    onValueChange = { subLink = it },
-                    label = { Text("Ссылка подписки") },
-                    singleLine = false,
-                    maxLines = 3,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = GreenPrimary,
-                        unfocusedBorderColor = Color(0xFF555555),
-                        cursorColor = GreenPrimary,
-                        focusedLabelColor = GreenPrimary,
-                        unfocusedTextColor = GrayText
+                // Сделал диалог прокручиваемым, чтобы история не обрезалась
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState())
+                ) {
+                    OutlinedTextField(
+                        value = subLink,
+                        onValueChange = { subLink = it },
+                        label = { Text("VLESS ссылка или Подписка") },
+                        singleLine = false,
+                        maxLines = 3,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = GreenPrimary,
+                            unfocusedBorderColor = Color(0xFF555555),
+                            cursorColor = GreenPrimary,
+                            focusedLabelColor = GreenPrimary,
+                            unfocusedTextColor = GrayText
+                        )
                     )
-                )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // КНОПКА ВСТАВИТЬ ИЗ БУФЕРА
+                    TextButton(
+                        onClick = {
+                            clipboardManager.getText()?.text?.let { subLink = it }
+                            showMyToast("✅ Вставлено ✅")
+                        },
+                        modifier = Modifier.align(Alignment.End)
+                    ) {
+                        Text("📋 Вставить 📋", color = GreenPrimary)
+                    }
+
+                    // СПИСОК ИСТОРИИ
+                    if (linkHistory.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(16.dp))
+                        HorizontalDivider(color = Color.Gray.copy(alpha = 0.3f))
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text("🔗 Недавние:", color = GrayText, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+
+                        linkHistory.forEach { historyLink ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically // Выравниваем по центру по высоте
+                            ) {
+                                // Текст ссылки (занимает всё свободное место слева)
+                                TextButton(
+                                    onClick = { subLink = historyLink },
+                                    modifier = Modifier.weight(1f) // weight(1f) заставляет текст занимать всё место, кроме крестика
+                                ) {
+                                    Text(
+                                        text = if (historyLink.length > 45) historyLink.substring(0, 45) + "..." else historyLink,
+                                        color = Color.White,
+                                        fontSize = 13.sp,
+                                        textAlign = TextAlign.Start,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+
+                                // Кнопка удаления (крестик)
+                                IconButton(
+                                    onClick = { removeFromHistory(historyLink) },
+                                    modifier = Modifier.size(32.dp) // Размер области нажатия
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close, // Стандартный крестик
+                                        contentDescription = "Удалить",
+                                        tint = GrayText,
+                                        modifier = Modifier.size(18.dp) // Размер самого крестика
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
             },
             confirmButton = {
                 TextButton(onClick = {
                     prefs.edit().putString("sub_link", subLink).apply()
                     showSettingsDialog = false
-                    Toast.makeText(context, "✅ Сохранено ✅", Toast.LENGTH_SHORT).show()
+                    showMyToast("\uD83D\uDCBE Сохранено \uD83D\uDCBE")
                 }) {
                     Text("✅ Сохранить ✅", color = Color.White)
                 }
@@ -420,7 +533,6 @@ fun VPNScreen() {
             shape = RoundedCornerShape(16.dp),
             title = { Text("📊 Общая статистика", color = Color.White, fontWeight = FontWeight.Bold) },
             text = {
-                // --- ИЗМЕНЕНИЯ ДЛЯ СТАТИСТИКИ: Вывод ОБЩИХ накопленных данных ---
                 Column {
                     Text("\uD83C\uDF10 Количество подключений: $totalConns \uD83C\uDF10", color = Color.White, fontSize = 14.sp)
                     Spacer(modifier = Modifier.height(8.dp))
@@ -450,7 +562,7 @@ private fun formatBytes(bytes: Long): String {
     }
 }
 
-// --- ИЗМЕНЕНИЯ ДЛЯ СТАТИСТИКИ: Форматирование для больших часов (сотни часов) ---
+// Форматирование для больших часов
 private fun formatTotalTime(totalSecs: Long): String {
     val days = totalSecs / 86400
     val hours = (totalSecs % 86400) / 3600
@@ -475,8 +587,7 @@ private fun startVpnConnection(activity: Activity, vlessLink: String, onResult: 
         e.printStackTrace()
         onResult(false)
     }
-    }
-
+}
 
 private fun buildSplitTunnelConfig(vlessLink: String): String {
     val uri = android.net.Uri.parse(vlessLink)
@@ -575,23 +686,37 @@ private fun buildSplitTunnelConfig(vlessLink: String): String {
     return config.toString()
 }
 
+
+// === ОБНОВЛЕННЫЙ API (понимает и подписки, и сырые ссылки) ===
 object MarzbanApi {
-    suspend fun getConfigFromSubLink(subUrl: String): String {
-        return withContext(Dispatchers.IO) {
-            val url = URL(subUrl)
-            val conn = url.openConnection() as HttpURLConnection
-            conn.requestMethod = "GET"
-            conn.connectTimeout = 5000
-            conn.readTimeout = 5000
+    suspend fun getConfigFromInput(input: String): String {
+        val trimmedInput = input.trim()
 
-            if (conn.responseCode != 200) throw Exception("Ссылка недействительна")
-
-            val base64Data = conn.inputStream.bufferedReader().readText()
-            val decodedBytes = Base64.decode(base64Data, Base64.DEFAULT)
-            val decodedString = String(decodedBytes)
-
-            decodedString.lines().firstOrNull { it.trim().startsWith("vless://") }
-                ?: throw Exception("VLESS не найден в подписке")
+        // 1. Если вставили прямую сырую ссылку (vless://...)
+        if (trimmedInput.startsWith("vless://", ignoreCase = true)) {
+            return trimmedInput
         }
+
+        // 2. Если вставили ссылку на подписку (https://...)
+        if (trimmedInput.startsWith("http://", ignoreCase = true) || trimmedInput.startsWith("https://", ignoreCase = true)) {
+            return withContext(Dispatchers.IO) {
+                val url = URL(trimmedInput)
+                val conn = url.openConnection() as HttpURLConnection
+                conn.requestMethod = "GET"
+                conn.connectTimeout = 5000
+                conn.readTimeout = 5000
+
+                if (conn.responseCode != 200) throw Exception("Ссылка подписки недействительна (код ${conn.responseCode})")
+
+                val base64Data = conn.inputStream.bufferedReader().readText()
+                val decodedBytes = Base64.decode(base64Data, Base64.DEFAULT)
+                val decodedString = String(decodedBytes)
+
+                decodedString.lines().firstOrNull { it.trim().startsWith("vless://", ignoreCase = true) }
+                    ?: throw Exception("VLESS не найден в подписке")
+            }
+        }
+
+        throw Exception("Неподдерживаемый формат. Вставьте vless:// или https://")
     }
 }
