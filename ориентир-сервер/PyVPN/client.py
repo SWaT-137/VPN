@@ -271,7 +271,12 @@ async def read_from_wintun(adapter, transport, protocol):
                 nonce = os.urandom(12)
                 transport.sendto(nonce + cipher.encrypt(nonce, trojan_payload, None), (SERVER_IP, SERVER_PORT))
                 protocol.tx_bytes += len(packet)
-        except: pass
+        except OSError:
+            # Адаптер был выключен (adapter.down()), выходим из цикла чтения
+            break
+        except:
+            # Другие ошибки - тоже выходим, чтобы не плодить зависшие потоки
+            break
 
 async def ip_request_loop(protocol):
     global connection_failed
@@ -338,23 +343,36 @@ def update_tray_status():
 
 def cleanup_vpn():
     log_message("Очистка маршрутов и завершение...")
+    
+    # 1. СНАЧАЛА гасим TUN-адаптер! Это снимает блокировку с потока чтения (adapter.read)
+    if vpn_protocol and vpn_protocol.adapter:
+        try:
+            vpn_protocol.adapter.down()
+        except: pass
+
+    # 2. Отправляем пакет отключения
     if vpn_protocol and vpn_protocol.transport and is_connected:
         try:
             disc_payload = SHA224_HASH + struct.pack('!d', time.time()) + struct.pack('B', CMD_DISCONNECT)
             nonce = os.urandom(12)
             for _ in range(3): vpn_protocol.transport.sendto(nonce + cipher.encrypt(nonce, disc_payload, None), (SERVER_IP, SERVER_PORT))
         except: pass
+
+    # 3. Удаляем маршруты (с таймаутом, чтобы не зависнуть самой процедуре очистки)
     try:
-        subprocess.run(f'route delete 0.0.0.0 mask 0.0.0.0 {TUN_GW}', shell=True)
-        subprocess.run(f'route delete {SERVER_IP}', shell=True)
-        for net_addr, mask in bypass_routes: subprocess.run(f'route delete {net_addr} mask {mask}', shell=True)
-        if vpn_protocol and vpn_protocol.adapter: vpn_protocol.adapter.down()
-    except Exception as e: log_message(f"Ошибка при очистке: {e}")
+        subprocess.run(f'route delete 0.0.0.0 mask 0.0.0.0 {TUN_GW}', shell=True, timeout=2)
+        subprocess.run(f'route delete {SERVER_IP}', shell=True, timeout=2)
+        for net_addr, mask in bypass_routes: 
+            subprocess.run(f'route delete {net_addr} mask {mask}', shell=True, timeout=2)
+    except: pass
 
 def on_exit(icon, item):
     cleanup_vpn()
-    if vpn_loop: vpn_loop.call_soon_threadsafe(vpn_loop.stop)
     icon.stop()
+    # ЖЕСТКОЕ ЗАВЕРШЕНИЕ ПРОЦЕССА. 
+    # Это единственный надежный способ убить все фоновые потоки Python в Windows,
+    # чтобы не оставалось зомби-процессов в диспетчере задач.
+    os._exit(0)
 
 def open_log(icon, item):
     if os.path.exists(LOG_FILE): os.startfile(LOG_FILE)
