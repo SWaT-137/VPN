@@ -1,4 +1,4 @@
-('C:\\Users\\Андрей\\VPN\\ориентир-сервер\\NEW\\build\\PyVPN\\PYZ-00.pyz',
+('C:\\Users\\Андрей\\VPN\\ориентир-сервер\\PyVPN\\build\\PyVPN\\PYZ-00.pyz',
  [('PIL',
    'C:\\Users\\Андрей\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PIL\\__init__.py',
    'PYMODULE'),
