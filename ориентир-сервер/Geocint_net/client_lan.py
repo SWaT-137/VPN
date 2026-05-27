@@ -9,14 +9,14 @@ import ctypes
 import socket
 import json
 import threading
-from pytun_pmd3 import TunTapDevice
+from pytun_pmd3 import TunTapDevice # ВАЖНО: Для Windows!
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
 import pystray
 from PIL import Image, ImageDraw
 
-# === НАСТРОЙКИ ПУТЕЙ (Отдельная папка от обычного VPN!) ===
+# === НАСТРОЙКИ ПУТЕЙ ===
 WORK_DIR = os.path.join(os.getenv('LOCALAPPDATA'), 'PyLAN')
 CONFIG_FILE = os.path.join(WORK_DIR, "config.json")
 LOG_FILE = os.path.join(WORK_DIR, "client_lan.log")
@@ -25,7 +25,7 @@ SERVER_IP = '163.5.29.66'
 SERVER_PORT = 65433 # ПОРТ ДЛЯ LAN СЕРВЕРА!
 NETMASK = '255.255.255.0'
 MTU = 1280
-ADAPTER_NAME = "PyLan"
+ADAPTER_NAME = "PyLAN" # Имя адаптера для LAN!
 PASSWORD = "SWaT_2008"
 
 SHA224_HASH = None
@@ -44,7 +44,7 @@ vpn_protocol = None
 is_connected = False
 connection_failed = False
 tray_icon = None
-TUN_GW = '10.0.1.1' # Шлюз по умолчанию для LAN подсети
+TUN_GW = '10.0.1.1'
 
 # === ЛОГИРОВАНИЕ ===
 def log_message(msg):
@@ -90,8 +90,8 @@ def load_config():
     if not os.path.exists(CONFIG_FILE):
         default_cfg = {
             "server_ip": "163.5.29.66", "server_port": 65433,
-            "password": "a1d611ba-86d2-409d-84e0-2e5013201189", # Твой UUID
-            "adapter_name": "PyLan"
+            "password": "a1d611ba-86d2-409d-84e0-2e5013201189",
+            "adapter_name": "PyLAN"
         }
         try:
             with open(CONFIG_FILE, 'w', encoding='utf-8') as f: json.dump(default_cfg, f, indent=4)
@@ -106,22 +106,20 @@ def load_config():
         ADAPTER_NAME = cfg.get("adapter_name", ADAPTER_NAME)
 
         SHA224_HASH = hashlib.sha224(PASSWORD.encode()).hexdigest().encode()
-        SERVER_SECRET = "super_secret_vpn_key_2024" # ДОЛЖЕН СОВПАДАТЬ С СЕРВЕРОМ!
+        SERVER_SECRET = "super_secret_vpn_key_2024"
         key_material = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=b'trojan-vpn-salt', iterations=100000).derive(SERVER_SECRET.encode())
         cipher = ChaCha20Poly1305(key_material)
         log_message("Конфигурация LAN загружена.")
         return True
     except Exception as e:
-        log_message(f"ОШИБКА чтения config.json: {e}. Используем настройки по умолчанию.")
+        log_message(f"ОШИБКА чтения config.json: {e}.")
         try:
             SHA224_HASH = hashlib.sha224(PASSWORD.encode()).hexdigest().encode()
             SERVER_SECRET = "super_secret_vpn_key_2024"
             key_material = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=b'trojan-vpn-salt', iterations=100000).derive(SERVER_SECRET.encode())
             cipher = ChaCha20Poly1305(key_material)
             return True
-        except Exception as e2:
-            log_message(f"КРИТИЧЕСКАЯ ОШИБКА инициализации шифрования: {e2}")
-            return False
+        except: return False
 
 # === СЕТЕВАЯ ЛОГИКА ===
 class VPNClientProtocol(asyncio.DatagramProtocol):
@@ -168,31 +166,21 @@ class VPNClientProtocol(asyncio.DatagramProtocol):
         nonce = os.urandom(12)
         self.transport.sendto(nonce + cipher.encrypt(nonce, req_payload, None), (SERVER_IP, SERVER_PORT))
 
-# === НАСТРОЙКА СЕТИ (ТОЛЬКО ЛОКАЛКА!) ===
 def setup_wintun(tun_ip, tun_gw):
     local_gw = get_default_gateway()
     if not local_gw: 
         log_message("ОШИБКА: Локальный шлюз не найден!")
         return None
 
-    # СОЗДАЕМ АДАПТЕР С НОВЫМ ИМЕНЕМ!
-    adapter = TunTapDevice(name=ADAPTER_NAME)
-    adapter.mtu = MTU
-    adapter.up()
-
+    adapter = TunTapDevice(name=ADAPTER_NAME); adapter.mtu = MTU; adapter.up()
     subprocess.run(f'netsh interface ip set address name="{ADAPTER_NAME}" dhcp', shell=True)
     time.sleep(1)
-
     subprocess.run(f'netsh interface ip set address name="{ADAPTER_NAME}" static {tun_ip} {NETMASK} {tun_gw}', shell=True)
     subprocess.run(f'netsh interface ip set dns name="{ADAPTER_NAME}" dhcp', shell=True)
-    # Метрику ставим 10, чтобы реальный интернет точно был приоритетнее
     subprocess.run(f'netsh interface ipv4 set interface "{ADAPTER_NAME}" metric=10', shell=True)
     time.sleep(3)
 
-    # Очистка только наших старых маршрутов
     subprocess.run(f'route delete 10.0.1.0', shell=True) 
-
-    # Маршрут ТОЛЬКО для виртуальной локалки
     subprocess.run(f'route add 10.0.1.0 mask 255.255.255.0 {tun_gw} metric 10', shell=True)
     
     log_message(f"WinTUN поднят (Режим LAN). IP: {tun_ip}, Шлюз: {tun_gw}")
@@ -222,12 +210,9 @@ async def read_from_wintun(adapter, transport, protocol):
                 nonce = os.urandom(12)
                 transport.sendto(nonce + cipher.encrypt(nonce, trojan_payload, None), (SERVER_IP, SERVER_PORT))
                 protocol.tx_bytes += len(packet)
-        except OSError:
-            # Адаптер был выключен (adapter.down()), выходим из цикла чтения
-            break
-        except:
-            # Другие ошибки - тоже выходим, чтобы не плодить зависшие потоки
-            break
+        except OSError: break
+        except: break
+
 async def ip_request_loop(protocol):
     global connection_failed
     attempts = 0
@@ -276,7 +261,7 @@ async def vpn_main():
 # === GUI (ТРЕЙ) ===
 def create_static_icon():
     image = Image.new('RGB', (64, 64), (30, 30, 30))
-    ImageDraw.Draw(image).rectangle([8, 8, 56, 56], fill=(0, 200, 83), outline='white', width=2) # Зеленая иконка для LAN
+    ImageDraw.Draw(image).rectangle([8, 8, 56, 56], fill=(0, 200, 83), outline='white', width=2)
     return image
 
 def update_tray_status():
@@ -293,30 +278,22 @@ def update_tray_status():
 
 def cleanup_vpn():
     log_message("Выход из LAN-сети...")
-    
-    # 1. СНАЧАЛА гасим TUN-адаптер! Это снимает блокировку с потока чтения (adapter.read)
     if vpn_protocol and vpn_protocol.adapter:
-        try:
-            vpn_protocol.adapter.down()
+        try: vpn_protocol.adapter.down()
         except: pass
-
-    # 2. Отправляем пакет отключения серверу
     if vpn_protocol and vpn_protocol.transport and is_connected:
         try:
             disc_payload = SHA224_HASH + struct.pack('!d', time.time()) + struct.pack('B', CMD_DISCONNECT)
             nonce = os.urandom(12)
             for _ in range(3): vpn_protocol.transport.sendto(nonce + cipher.encrypt(nonce, disc_payload, None), (SERVER_IP, SERVER_PORT))
         except: pass
-
-    # 3. Удаляем маршруты (только подсеть LAN)
     try:
         subprocess.run(f'route delete 10.0.1.0 mask 255.255.255.0 {TUN_GW}', shell=True, timeout=2)
     except: pass
+
 def on_exit(icon, item):
     cleanup_vpn()
     icon.stop()
-    # ЖЕСТКОЕ ЗАВЕРШЕНИЕ ПРОЦЕССА. 
-    # Гарантирует, что в Диспетчере задач не останется зомби-процессов PyLAN.exe
     os._exit(0)
 
 def open_log(icon, item):
