@@ -22,7 +22,7 @@ def resource_path(relative_path):
     """ Получить абсолютный путь к файлу, работает и для разработки, и для PyInstaller """
     if hasattr(sys, '_MEIPASS'):
         return os.path.join(sys._MEIPASS, relative_path)
-    return os.path.join(os.path.abspath("."), relative_path)
+    return os.path.join(os.path.abspath(""), relative_path)
 
 def run_shell(cmd):
     return subprocess.run(cmd, shell=True, creationflags=NO_WINDOW).returncode
