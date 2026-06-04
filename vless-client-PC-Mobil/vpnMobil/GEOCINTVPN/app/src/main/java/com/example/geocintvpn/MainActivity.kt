@@ -83,12 +83,14 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import kotlin.collections.mutableMapOf
-
+// глобал перменные
 val DarkBg = Color(0xFF26252D)
 val DarkSurface = Color(0xFF2E2D38)
 val GrayText = Color(0xFFA0A0B0)
 val GreenPrimary = Color(0xFF4CAF50)
 
+
+// точка входа, используем compose а не XML разметку
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -110,26 +112,25 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
-
+// логика и визуал
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun VPNScreen() {
     val context = LocalContext.current
     val activity = context as? Activity ?: return
-    val clipboardManager = LocalClipboardManager.current // Для кнопки "Вставить"
+    val clipboardManager = LocalClipboardManager.current // используем clipboardManager для того что бы вставить
 
     val backgroundBrush = Brush.verticalGradient(
         colors = listOf(Color(0xFF1A1A2E), DarkBg)
     )
 
-    val prefs = context.getSharedPreferences("vpn_prefs", Context.MODE_PRIVATE)
+    val prefs = context.getSharedPreferences("vpn_prefs", Context.MODE_PRIVATE) // сохранение настроек с помощью внутренй памяти андроед
     var subLink by remember { mutableStateOf(prefs.getString("sub_link", "") ?: "") }
 
-    // История ссылок
     var linkHistory by remember {
         mutableStateOf(prefs.getStringSet("link_history", emptySet())?.toList() ?: emptyList())
     }
-
+// переменные
     var isConnected by remember { mutableStateOf(false) }
     var statusText by remember { mutableStateOf("Отключено") }
     var pendingConfig by remember { mutableStateOf<String?>(null) }
@@ -139,14 +140,12 @@ fun VPNScreen() {
     var showCustomToast by remember { mutableStateOf(false) }
     var customToastText by remember { mutableStateOf("") }
 
-    // --- СТАТИСТИКА: Переменные текущей сессии ---
     var sessionSeconds by remember { mutableIntStateOf(0) }
     var baseRxBytes by remember { mutableLongStateOf(0L) }
     var baseTxBytes by remember { mutableLongStateOf(0L) }
     var sessionDown by remember { mutableLongStateOf(0L) }
     var sessionUp by remember { mutableLongStateOf(0L) }
 
-    // --- СТАТИСТИКА: Переменные общих накопленных значений ---
     var totalSeconds by remember { mutableLongStateOf(prefs.getLong("stat_total_seconds", 0L)) }
     var totalDown by remember { mutableLongStateOf(prefs.getLong("stat_total_down", 0L)) }
     var totalUp by remember { mutableLongStateOf(prefs.getLong("stat_total_up", 0L)) }
@@ -154,9 +153,7 @@ fun VPNScreen() {
 
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val coroutineScope = rememberCoroutineScope()
-
-    // Функция сохранения в историю (макс 5 штук)
-    // Функция сохранения в историю
+// управление историей
     fun saveToHistory(link: String) {
         if (link.isBlank()) return
         val updatedHistory = (listOf(link) + linkHistory).distinct().take(5)
@@ -164,13 +161,12 @@ fun VPNScreen() {
         prefs.edit().putStringSet("link_history", updatedHistory.toSet()).apply()
     }
 
-    // ДОБАВИТЬ ЭТУ ФУНКЦИЮ:
     fun removeFromHistory(linkToRemove: String) {
         val updatedHistory = linkHistory.filter { it != linkToRemove }
         linkHistory = updatedHistory
         prefs.edit().putStringSet("link_history", updatedHistory.toSet()).apply()
     }
-
+// проверка запущен ли впн и если запущен то включаем экран с подключенно
     LaunchedEffect(Unit) {
         val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
         @Suppress("DEPRECATION")
@@ -184,7 +180,7 @@ fun VPNScreen() {
             baseTxBytes = TrafficStats.getUidTxBytes(Process.myUid())
         }
     }
-
+// проверка статистики и ее обновление
     LaunchedEffect(isConnected) {
         if (isConnected) {
             baseRxBytes = TrafficStats.getUidRxBytes(Process.myUid())
@@ -203,7 +199,7 @@ fun VPNScreen() {
             sessionUp = 0L
         }
     }
-
+// запрашиваене разрешение на создание впна
     val vpnPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -213,7 +209,7 @@ fun VPNScreen() {
                     if (success) {
                         totalConns++
                         prefs.edit().putInt("stat_total_conns", totalConns).apply()
-                        saveToHistory(subLink) // Сохраняем при успехе
+                        saveToHistory(subLink)
 
                         isConnected = true
                         statusText = "Подключено"
@@ -229,7 +225,7 @@ fun VPNScreen() {
             isConnected = false
         }
     }
-
+// всплывающие снизу окошечко кастомное
     fun showMyToast(message: String) {
         customToastText = message
         showCustomToast = true
@@ -238,7 +234,7 @@ fun VPNScreen() {
             showCustomToast = false
         }
     }
-
+// включение выключение и записывание в общую статиску
     fun onToggle(checked: Boolean) {
         if (checked) {
             if (subLink.isBlank()) {
@@ -248,7 +244,6 @@ fun VPNScreen() {
             statusText = "Подключение (настройка маршрутизации)..."
             CoroutineScope(Dispatchers.IO).launch {
                 try {
-                    // ИСПОЛЬЗУЕМ НОВУЮ ФУНКЦИЮ (поддерживает и vless:// и https://)
                     val vlessConfig = MarzbanApi.getConfigFromInput(subLink.trim())
                     withContext(Dispatchers.Main) {
                         val vpnIntent = VpnService.prepare(activity)
@@ -260,7 +255,7 @@ fun VPNScreen() {
                                 if (success) {
                                     totalConns++
                                     prefs.edit().putInt("stat_total_conns", totalConns).apply()
-                                    saveToHistory(subLink) // Сохраняем при успехе
+                                    saveToHistory(subLink)
 
                                     isConnected = true
                                     statusText = "Подключено"
@@ -293,7 +288,7 @@ fun VPNScreen() {
     }
 
     val sessionTimeString = String.format("%02d:%02d:%02d", sessionSeconds / 3600, (sessionSeconds % 3600) / 60, sessionSeconds % 60)
-
+// построение графики с помощью Compose
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = {
@@ -329,13 +324,11 @@ fun VPNScreen() {
             }
         }
     ) {
-        // ГЛАВНЫЙ КОНТЕЙНЕР (Здесь лежит градиент на всю страницу)
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(backgroundBrush)
         ) {
-            // Кнопка меню (привязана к верхнему левому углу Box'а)
             IconButton(
                 onClick = { coroutineScope.launch { drawerState.open() } },
                 modifier = Modifier
@@ -345,7 +338,6 @@ fun VPNScreen() {
                 Icon(Icons.Filled.Menu, contentDescription = "Открыть меню", tint = Color.White)
             }
 
-            // ОСНОВНОЙ КОНТЕНТ (Кнопка, статус, карточки)
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -402,13 +394,12 @@ fun VPNScreen() {
                         Text("⏳ Время сессии: $sessionTimeString ⏳", color = GrayText, fontSize = 14.sp)
                     }
                 }
-            } // <--- ЗДЕСЬ ЗАКАНЧИВАЕТСЯ COLUMN. Всё что ниже - вне её!
+            }
 
-            // НАША ВСПЛЫВАЮЩАЯ КАРТОЧКА (Находится внутри Box, но ВНЕ Column)
             if (showCustomToast) {
                 Card(
                     modifier = Modifier
-                        .align(Alignment.BottomCenter) // Приклеиваем к низу экрана
+                        .align(Alignment.BottomCenter)
                         .padding(bottom = 32.dp),
                     shape = RoundedCornerShape(12.dp),
                     colors = CardDefaults.cardColors(containerColor = Color(0xFF444444))
@@ -422,8 +413,8 @@ fun VPNScreen() {
                     )
                 }
             }
-        } // <--- ЗДЕСЬ ЗАКАНЧИВАЕТСЯ BOX
-    } // <--- ЗДЕСЬ ЗАКАНЧИВАЕТСЯ NAVIGATION DRAWER
+        }
+    }
 
 
     if (showSettingsDialog) {
@@ -433,7 +424,6 @@ fun VPNScreen() {
             shape = RoundedCornerShape(16.dp),
             title = { Text("⚙️ Настройки", color = Color.White, fontWeight = FontWeight.Bold) },
             text = {
-                // Сделал диалог прокручиваемым, чтобы история не обрезалась
                 Column(
                     modifier = Modifier.verticalScroll(rememberScrollState())
                 ) {
@@ -455,7 +445,6 @@ fun VPNScreen() {
 
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    // КНОПКА ВСТАВИТЬ ИЗ БУФЕРА
                     TextButton(
                         onClick = {
                             clipboardManager.getText()?.text?.let { subLink = it }
@@ -466,7 +455,6 @@ fun VPNScreen() {
                         Text("📋 Вставить 📋", color = GreenPrimary)
                     }
 
-                    // СПИСОК ИСТОРИИ
                     if (linkHistory.isNotEmpty()) {
                         Spacer(modifier = Modifier.height(16.dp))
                         HorizontalDivider(color = Color.Gray.copy(alpha = 0.3f))
@@ -476,12 +464,11 @@ fun VPNScreen() {
                         linkHistory.forEach { historyLink ->
                             Row(
                                 modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
-                                verticalAlignment = Alignment.CenterVertically // Выравниваем по центру по высоте
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                // Текст ссылки (занимает всё свободное место слева)
                                 TextButton(
                                     onClick = { subLink = historyLink },
-                                    modifier = Modifier.weight(1f) // weight(1f) заставляет текст занимать всё место, кроме крестика
+                                    modifier = Modifier.weight(1f)
                                 ) {
                                     Text(
                                         text = if (historyLink.length > 45) historyLink.substring(0, 45) + "..." else historyLink,
@@ -492,16 +479,15 @@ fun VPNScreen() {
                                     )
                                 }
 
-                                // Кнопка удаления (крестик)
                                 IconButton(
                                     onClick = { removeFromHistory(historyLink) },
-                                    modifier = Modifier.size(32.dp) // Размер области нажатия
+                                    modifier = Modifier.size(32.dp)
                                 ) {
                                     Icon(
-                                        imageVector = Icons.Default.Close, // Стандартный крестик
+                                        imageVector = Icons.Default.Close,
                                         contentDescription = "Удалить",
                                         tint = GrayText,
-                                        modifier = Modifier.size(18.dp) // Размер самого крестика
+                                        modifier = Modifier.size(18.dp)
                                     )
                                 }
                             }
@@ -552,7 +538,8 @@ fun VPNScreen() {
     }
 }
 
-// Вспомогательная функция для красивого форматирования байт
+
+//  функции считалочки и переводители
 private fun formatBytes(bytes: Long): String {
     return when {
         bytes < 1024 -> "$bytes Б"
@@ -562,7 +549,6 @@ private fun formatBytes(bytes: Long): String {
     }
 }
 
-// Форматирование для больших часов
 private fun formatTotalTime(totalSecs: Long): String {
     val days = totalSecs / 86400
     val hours = (totalSecs % 86400) / 3600
@@ -575,9 +561,7 @@ private fun formatTotalTime(totalSecs: Long): String {
         String.format("%02d:%02d:%02d", hours, minutes, seconds)
     }
 }
-
-// === ЛОГИКА ПОДКЛЮЧЕНИЯ (НЕ ИЗМЕНЕНО) ===
-
+// передача в системные настройки информации о работе
 private fun startVpnConnection(activity: Activity, vlessLink: String, onResult: (Boolean) -> Unit) {
     try {
         val finalConfig = buildSplitTunnelConfig(vlessLink)
@@ -588,7 +572,7 @@ private fun startVpnConnection(activity: Activity, vlessLink: String, onResult: 
         onResult(false)
     }
 }
-
+// логика генерации конфигурации
 private fun buildSplitTunnelConfig(vlessLink: String): String {
     val uri = android.net.Uri.parse(vlessLink)
     val uuid = uri.userInfo ?: ""
@@ -657,7 +641,7 @@ private fun buildSplitTunnelConfig(vlessLink: String): String {
     serverEntry.put("settings", outboundSettings)
     serverEntry.put("streamSettings", streamSettings)
 
-    val domainRule = JSONObject()
+    val domainRule = JSONObject() // русский трафик идет как обычно, весь другой через тунель
     domainRule.put("type", "field")
     domainRule.put("domain", JSONArray().put("domain:.ru").put("domain:.su").put("domain:.рф"))
     domainRule.put("outboundTag", "direct")
@@ -685,19 +669,15 @@ private fun buildSplitTunnelConfig(vlessLink: String): String {
 
     return config.toString()
 }
-
-
-// === ОБНОВЛЕННЫЙ API (понимает и подписки, и сырые ссылки) ===
+// парсер для работы ссылками VLESS
 object MarzbanApi {
     suspend fun getConfigFromInput(input: String): String {
         val trimmedInput = input.trim()
 
-        // 1. Если вставили прямую сырую ссылку (vless://...)
         if (trimmedInput.startsWith("vless://", ignoreCase = true)) {
             return trimmedInput
         }
 
-        // 2. Если вставили ссылку на подписку (https://...)
         if (trimmedInput.startsWith("http://", ignoreCase = true) || trimmedInput.startsWith("https://", ignoreCase = true)) {
             return withContext(Dispatchers.IO) {
                 val url = URL(trimmedInput)

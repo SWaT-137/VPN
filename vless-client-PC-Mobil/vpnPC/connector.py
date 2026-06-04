@@ -18,22 +18,21 @@ TUN_NAME = "XrayVPN"
 TUN_MTU = 1420
 NO_WINDOW = subprocess.CREATE_NO_WINDOW
 
-def resource_path(relative_path):
-    """ Получить абсолютный путь к файлу, работает и для разработки, и для PyInstaller """
+def resource_path(relative_path): #путь для создания и использования необходимых файлов
     if hasattr(sys, '_MEIPASS'):
         return os.path.join(sys._MEIPASS, relative_path)
     return os.path.join(os.path.abspath(""), relative_path)
 
-def run_shell(cmd):
+def run_shell(cmd): # для использования консоли
     return subprocess.run(cmd, shell=True, creationflags=NO_WINDOW).returncode
 
 
-def route_print():
+def route_print(): # получение таблица маршрутизации виндувс
     r = subprocess.run('route print 0.0.0.0', capture_output=True, shell=True, creationflags=NO_WINDOW)
     return r.stdout.decode('cp866', errors='replace')
 
 
-def ps_cmd(cmd):
+def ps_cmd(cmd): # запуск от имени админа с опредлеными требованиями
     try:
         r = subprocess.run(['powershell', '-NoProfile', '-Command', cmd], capture_output=True, creationflags=NO_WINDOW,
                            timeout=4)
@@ -42,14 +41,14 @@ def ps_cmd(cmd):
         return ""
 
 
-def check_admin():
+def check_admin(): # проверка на админку
     try:
         return ctypes.windll.shell32.IsUserAnAdmin()
     except:
         return False
 
 
-def fetch_subscription(url):
+def fetch_subscription(url): # скачивание ссылки и декодинг с помощью base64
     try:
         with urllib.request.urlopen(url, timeout=10) as resp:
             raw = resp.read().decode('utf-8', errors='replace').strip()
@@ -70,7 +69,7 @@ def fetch_subscription(url):
     return links
 
 
-def parse_vless_link(link):
+def parse_vless_link(link): # разбор ссылки на компоненты
     if not link.startswith('vless://'):
         raise ValueError("Неверный формат ссылки")
     rest = link[8:]
@@ -111,6 +110,7 @@ def parse_vless_link(link):
         "flow": params.get('flow', ''), "remarks": urllib.parse.unquote(name)
     }
 
+### ядро ###
 
 class XrayManager:
     def __init__(self, config):
@@ -120,12 +120,13 @@ class XrayManager:
         self.log_file = None
         self.server_ip = None
 
-    def generate_config(self):
+    def generate_config(self): # преобразование домена в айпи
         try:
             self.server_ip = socket.gethostbyname(self.config['address'])
         except socket.gaierror as e:
             raise Exception(f"Не удалось разрешить адрес {self.config['address']}: {e}")
 
+        #конфиг
         xray_conf = {
             "log": {"loglevel": "warning"},
             "inbounds": [{
@@ -159,14 +160,14 @@ class XrayManager:
             ],
             "dns": {
                 "servers": [
-                    {"address": "https://1.1.1.1/dns-query", "detour": "proxy"},
+                    {"address": "https://1.1.1.1/dns-query", "detour": "proxy"}, # doh защита от утечек DNS (dns over https)
                     {"address": "https://8.8.8.8/dns-query", "detour": "proxy"}
                 ], "queryStrategy": "UseIPv4"
             },
             "routing": {
                 "domainStrategy": "IPIfNonMatch",
                 "rules": [
-                    {"type": "field", "ip": ["169.254.0.0/16", "224.0.0.0/4", "ff00::/8"], "outboundTag": "block"},
+                    {"type": "field", "ip": ["169.254.0.0/16", "224.0.0.0/4", "ff00::/8"], "outboundTag": "block"}, # блок мультикаста и личных IP
                     {"type": "field", "inboundTag": ["tun-in"], "port": "53", "outboundTag": "proxy"},
                     {"type": "field", "ip": ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8"],
                      "outboundTag": "direct"}
@@ -179,7 +180,7 @@ class XrayManager:
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(xray_conf, f, indent=2)
 
-    def start(self):
+    def start(self): #запуск
         script_dir = os.path.dirname(self.xray_path)
         log_path = os.path.join(script_dir, "xray_console.log")
         config_path = os.path.join(script_dir, "xray_config.json")
@@ -194,7 +195,7 @@ class XrayManager:
         )
 
 
-    def stop(self):
+    def stop(self): # коректное завершение работы
         if self.log_file:
             try:
                 self.log_file.close()
@@ -208,15 +209,15 @@ class XrayManager:
                 self.process.kill()
 
 
-class RoutingManager:
+class RoutingManager: # Маршрутизция
     @staticmethod
-    def get_tun_index():
+    def get_tun_index(): # получение индекса на котором стоит нужный адаптер
         idx = ps_cmd(
             f'Get-NetAdapter -Name "{TUN_NAME}" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty ifIndex')
         return int(idx) if idx.isdigit() else None
 
     @staticmethod
-    def get_main_adapter_info():
+    def get_main_adapter_info(): # узнавание стандартного шлюза и IP
         text = route_print()
         for line in text.split('\n'):
             parts = line.split()
@@ -230,7 +231,7 @@ class RoutingManager:
         return None, None
 
     @staticmethod
-    def add_routes(server_ip):
+    def add_routes(server_ip): # удаление старых маршрутов, создание нового, отключение IPv6
         tun_index = None
         for i in range(15):
             tun_index = RoutingManager.get_tun_index()
@@ -258,7 +259,7 @@ class RoutingManager:
         return True
 
     @staticmethod
-    def remove_routes(server_ip):
+    def remove_routes(server_ip): # djpdhfotybt dctuj yf vtcnj
         run_shell('route delete 0.0.0.0 mask 128.0.0.0')
         run_shell('route delete 128.0.0.0 mask 128.0.0.0')
         if server_ip:
@@ -266,7 +267,7 @@ class RoutingManager:
         run_shell(f'netsh interface ipv6 set interface "{TUN_NAME}" enable')
 
 
-class ConnectionThread(QThread):
+class ConnectionThread(QThread): # потоки для фоновых асинхронной задачи
     success = Signal(str)
     error = Signal(str)
     status_msg = Signal(str)
@@ -307,7 +308,7 @@ class ConnectionThread(QThread):
                 self.xray.stop()
 
 
-class StatsThread(QThread):
+class StatsThread(QThread): # асинхронный поток для сбора статистики
     stats_updated = Signal(int, float, float, float, float)
 
     def __init__(self, server_ip):
@@ -361,8 +362,8 @@ class StatsThread(QThread):
     def stop(self):
         self._running = False
 
-
-class ToggleSwitch(QWidget):
+#### визуал ####
+class ToggleSwitch(QWidget): # кнопка
     toggled = Signal(bool)
 
     def __init__(self, parent=None):
@@ -407,7 +408,7 @@ class ToggleSwitch(QWidget):
         self.toggled.emit(self._checked)
 
 
-class OverlayDialog(QWidget):
+class OverlayDialog(QWidget): # боковая выезжающая панель
     def __init__(self, parent_main_window):
         super().__init__(parent_main_window)
         self.main_window = parent_main_window
@@ -486,7 +487,7 @@ class OverlayDialog(QWidget):
             if widget is not None: widget.deleteLater()
 
 
-class MainWindow(QWidget):
+class MainWindow(QWidget): # главное приложение
     def __init__(self):
         super().__init__()
         self.ping = 0
@@ -562,7 +563,7 @@ class MainWindow(QWidget):
             self.force_disconnect()
         event.accept()
 
-    def force_disconnect(self):
+    def force_disconnect(self): # безопастное отключение
         if self.stats_thread:
             self.stats_thread.stop()
             self.stats_thread.wait(1000)
@@ -617,7 +618,7 @@ class MainWindow(QWidget):
             self.timer_label.setVisible(False)
             self.button4.setEnabled(True)
 
-    def on_connection_success(self, ip):
+    def on_connection_success(self, ip): # запуск потоков и привязка к кнопкам
         self.xray_manager = self.connection_thread.xray
         self.server_ip = ip
         self.is_connected = True
@@ -737,7 +738,7 @@ class MainWindow(QWidget):
         self.save_settings()
         self.overlay.hide_overlay()
 
-    def force_fix_network(self):
+    def force_fix_network(self): # Кнопка починки если что-то получилось не так
         reply = QMessageBox.question(
             self, 'Принудительная починка',
             'Это действие принудительно завершит Xray, удалит маршруты\n'
