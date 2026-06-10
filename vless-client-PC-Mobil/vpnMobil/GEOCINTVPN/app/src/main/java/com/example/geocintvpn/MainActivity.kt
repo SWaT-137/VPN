@@ -36,6 +36,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.outlined.PowerSettingsNew
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DrawerValue
@@ -55,6 +56,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -153,7 +155,22 @@ fun VPNScreen() {
 
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val coroutineScope = rememberCoroutineScope()
-// управление историей
+
+// грамотное завершение: сохраняем статистику при свайпе приложения или закрытии
+    DisposableEffect(Unit) {
+        onDispose {
+            if (isConnected) {
+                val editor = prefs.edit()
+                editor.putLong("stat_total_seconds", totalSeconds + sessionSeconds)
+                editor.putLong("stat_total_down", totalDown + sessionDown)
+                editor.putLong("stat_total_up", totalUp + sessionUp)
+                editor.putBoolean("is_vpn_running", false) // сбрасываем флаг
+                editor.apply()
+            }
+        }
+    }
+
+    // управление историей
     fun saveToHistory(link: String) {
         if (link.isBlank()) return
         val updatedHistory = (listOf(link) + linkHistory).distinct().take(5)
@@ -166,30 +183,26 @@ fun VPNScreen() {
         linkHistory = updatedHistory
         prefs.edit().putStringSet("link_history", updatedHistory.toSet()).apply()
     }
-// проверка запущен ли впн и если запущен то включаем экран с подключенно
+// проверка запущен ли впн и если запущен то включаем экран с подключенно (стабильная версия без устаревших API)
     LaunchedEffect(Unit) {
-        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-        @Suppress("DEPRECATION")
-        val isServiceRunning = am.getRunningServices(Int.MAX_VALUE).any {
-            it.service.className == "dev.dev7.lib.v2ray.services.V2rayVPNService"
-        }
-        if (isServiceRunning) {
+        // используем флаг из памяти вместо крашащегося getRunningServices для стабильности
+        if (prefs.getBoolean("is_vpn_running", false)) {
             isConnected = true
             statusText = "Подключено"
-            baseRxBytes = TrafficStats.getUidRxBytes(Process.myUid())
-            baseTxBytes = TrafficStats.getUidTxBytes(Process.myUid())
+            baseRxBytes = try { TrafficStats.getUidRxBytes(Process.myUid()) } catch (e: Exception) { 0L }
+            baseTxBytes = try { TrafficStats.getUidTxBytes(Process.myUid()) } catch (e: Exception) { 0L }
         }
     }
-// проверка статистики и ее обновление
+// проверка статистики и ее обновление (добавлена защита от крашей на некоторых прошивках)
     LaunchedEffect(isConnected) {
         if (isConnected) {
-            baseRxBytes = TrafficStats.getUidRxBytes(Process.myUid())
-            baseTxBytes = TrafficStats.getUidTxBytes(Process.myUid())
+            baseRxBytes = try { TrafficStats.getUidRxBytes(Process.myUid()) } catch (e: Exception) { 0L }
+            baseTxBytes = try { TrafficStats.getUidTxBytes(Process.myUid()) } catch (e: Exception) { 0L }
             while (true) {
                 delay(1000L)
                 sessionSeconds++
-                val currentRx = TrafficStats.getUidRxBytes(Process.myUid())
-                val currentTx = TrafficStats.getUidTxBytes(Process.myUid())
+                val currentRx = try { TrafficStats.getUidRxBytes(Process.myUid()) } catch (e: Exception) { -1L }
+                val currentTx = try { TrafficStats.getUidTxBytes(Process.myUid()) } catch (e: Exception) { -1L }
                 if (currentRx > 0 && baseRxBytes > 0) sessionDown = currentRx - baseRxBytes
                 if (currentTx > 0 && baseTxBytes > 0) sessionUp = currentTx - baseTxBytes
             }
@@ -205,7 +218,7 @@ fun VPNScreen() {
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
             pendingConfig?.let {
-                startVpnConnection(activity, it) { success ->
+                startVpnConnection(activity, it, prefs) { success ->
                     if (success) {
                         totalConns++
                         prefs.edit().putInt("stat_total_conns", totalConns).apply()
@@ -225,7 +238,7 @@ fun VPNScreen() {
             isConnected = false
         }
     }
-// всплывающие снизу окошечко кастомное
+    // всплывающие снизу окошечко кастомное
     fun showMyToast(message: String) {
         customToastText = message
         showCustomToast = true
@@ -234,7 +247,7 @@ fun VPNScreen() {
             showCustomToast = false
         }
     }
-// включение выключение и записывание в общую статиску
+    // включение выключение и записывание в общую статиску
     fun onToggle(checked: Boolean) {
         if (checked) {
             if (subLink.isBlank()) {
@@ -251,7 +264,7 @@ fun VPNScreen() {
                             pendingConfig = vlessConfig
                             vpnPermissionLauncher.launch(vpnIntent)
                         } else {
-                            startVpnConnection(activity, vlessConfig) { success ->
+                            startVpnConnection(activity, vlessConfig, prefs) { success ->
                                 if (success) {
                                     totalConns++
                                     prefs.edit().putInt("stat_total_conns", totalConns).apply()
@@ -279,6 +292,7 @@ fun VPNScreen() {
                 .putLong("stat_total_seconds", totalSeconds)
                 .putLong("stat_total_down", totalDown)
                 .putLong("stat_total_up", totalUp)
+                .putBoolean("is_vpn_running", false) // грамотное завершение: снимаем флаг
                 .apply()
 
             dev.dev7.lib.v2ray.V2rayController.stopV2ray(activity)
@@ -493,6 +507,23 @@ fun VPNScreen() {
                             }
                         }
                     }
+
+                    // Кнопка перенесена сюда
+                    Spacer(modifier = Modifier.height(24.dp))
+                    HorizontalDivider(color = Color.Gray.copy(alpha = 0.3f))
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    TextButton(
+                        onClick = {
+                            showSettingsDialog = false // закрываем настройки перед убийством
+                            prefs.edit().putBoolean("is_vpn_running", false).apply()
+                            android.os.Process.killProcess(android.os.Process.myPid())
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFFFF5252))
+                    ) {
+                        Text("\uD83D\uDEA8Починка приложения\uD83D\uDEA8", fontSize = 16.sp)
+                    }
                 }
             },
             confirmButton = {
@@ -561,18 +592,19 @@ private fun formatTotalTime(totalSecs: Long): String {
         String.format("%02d:%02d:%02d", hours, minutes, seconds)
     }
 }
-// передача в системные настройки информации о работе
-private fun startVpnConnection(activity: Activity, vlessLink: String, onResult: (Boolean) -> Unit) {
+// передача в системные настройки информации о работе (добавлен prefs для флага запуска)
+private fun startVpnConnection(activity: Activity, vlessLink: String, prefs: android.content.SharedPreferences, onResult: (Boolean) -> Unit) {
     try {
         val finalConfig = buildSplitTunnelConfig(vlessLink)
         dev.dev7.lib.v2ray.V2rayController.startV2ray(activity, "GEOCINTVPN", finalConfig, null)
+        prefs.edit().putBoolean("is_vpn_running", true).apply() // сохраняем флаг что мы запущены
         onResult(true)
     } catch (e: Exception) {
         e.printStackTrace()
         onResult(false)
     }
 }
-// логика генерации конфигурации
+// логика генерации конфигурации (парсит чистую ссылку без закодированных строк)
 private fun buildSplitTunnelConfig(vlessLink: String): String {
     val uri = android.net.Uri.parse(vlessLink)
     val uuid = uri.userInfo ?: ""
