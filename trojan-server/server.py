@@ -19,8 +19,8 @@ MTU = 1280
 SERVER_PORT = 65432
 USERS_FILE = "users.json"
 
-# --- НАСТРОЙКИ ШИФРОВАНИЯ ---
-SERVER_SECRET = "SWaT_2008" # ДОЛЖЕН СОВПАДАТЬ С КЛИЕНТОМ!
+# шифрование
+SERVER_SECRET = "SWaT_2008" # единный ключ с клиентом
 key_material = PBKDF2HMAC(
     algorithm=hashes.SHA256(),
     length=32,
@@ -35,7 +35,7 @@ CMD_PING = 0x01
 CMD_PONG = 0x02
 CMD_IP_REQ = 0x03
 CMD_IP_ACK = 0x04
-CMD_DISCONNECT = 0x05 # НОВАЯ КОМАНДА!
+CMD_DISCONNECT = 0x05 
 
 allowed_users = {}
 
@@ -67,7 +67,6 @@ class VPNServerProtocol(asyncio.DatagramProtocol):
     def __init__(self):
         self.transport = None
         self.tun = None
-        # Новая структура: {'10.0.0.2': {'addr': ('1.2.3.4', 123), 'name': 'User', 'last_seen': 123456.78}}
         self.clients = {} 
         self.udp_to_vip = {}
         self.tx_bytes = 0
@@ -109,7 +108,7 @@ class VPNServerProtocol(asyncio.DatagramProtocol):
             if old_vip in self.clients:
                 self.remove_client(old_vip, "Переподключение")
 
-        # Ищем свободный IP
+        # поиск свободного ip
         for i in range(2, 255):
             ip = f"10.0.0.{i}"
             if ip not in self.clients:
@@ -142,7 +141,7 @@ class VPNServerProtocol(asyncio.DatagramProtocol):
                 expected_vip = self.udp_to_vip[addr]
                 if src_ip != expected_vip: return
                 
-                # Обновляем время активности
+                # время активности
                 self.clients[expected_vip]['last_seen'] = time.time()
                 if self.clients[expected_vip]['addr'] != addr:
                     print(f"[Маршрут] Клиент '{username}' сменил адрес на {addr}")
@@ -180,7 +179,7 @@ class VPNServerProtocol(asyncio.DatagramProtocol):
                     self.transport.sendto(nonce + ciphertext, addr)
 
             elif cmd == CMD_DISCONNECT:
-                # КЛИЕНТ ЯВНО СКАЗАЛ, ЧТО УХОДИТ
+                # явное отключение клиента
                 if addr in self.udp_to_vip:
                     vip = self.udp_to_vip[addr]
                     self.remove_client(vip, "Запрос на отключение от клиента")
@@ -219,7 +218,7 @@ class VPNServerProtocol(asyncio.DatagramProtocol):
             dead_vips = []
             # Ищем мертвых
             for vip, data in self.clients.items():
-                if now - data['last_seen'] > 60: # 60 секунд тишины = смерть
+                if now - data['last_seen'] > 60: # 60 с тишина - отключаем клиентов
                     dead_vips.append(vip)
             # Удаляем
             for vip in dead_vips:
