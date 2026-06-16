@@ -31,6 +31,7 @@ MTU = 1280
 ADAPTER_NAME = "PyVPN"
 PASSWORD = "SWaT_2008"
 
+
 SHA224_HASH = None
 cipher = None
 
@@ -54,6 +55,7 @@ is_connected = False
 connection_failed = False
 tray_icon = None
 TUN_GW = '10.0.0.1'
+LOCAL_GW = "" 
 # всякая полезная фигня
 def log_message(msg): # простое логирование
     try:
@@ -94,14 +96,15 @@ def get_default_gateway(): # вызывет команду router - показы
 
 def load_config():# читает config.json а также создает этот же конфиг
    
-    global SERVER_IP, SERVER_PORT, ADAPTER_NAME, PASSWORD, SHA224_HASH, cipher, SPLIT_TUNNEL_MODE
+    global SERVER_IP, SERVER_PORT, ADAPTER_NAME, PASSWORD, SHA224_HASH, cipher, SPLIT_TUNNEL_MODE,LOCAL_GW
     
     if not os.path.exists(CONFIG_FILE):
         default_cfg = {
             "server_ip": "163.5.29.66", "server_port": 65432,
             "password": "", # Замени на свой UUID
             "adapter_name": "PyVPN",
-            "split_tunnel": "ru" # off - всё через VPN, ru - РФ в обход
+            "split_tunnel": "ru", # off - всё через VPN, ru - РФ в обход
+            "local_gw": ""
         }
         try:
             with open(CONFIG_FILE, 'w', encoding='utf-8') as f: json.dump(default_cfg, f, indent=4)
@@ -115,7 +118,7 @@ def load_config():# читает config.json а также создает это
         PASSWORD = cfg.get("password", PASSWORD)
         ADAPTER_NAME = cfg.get("adapter_name", ADAPTER_NAME)
         SPLIT_TUNNEL_MODE = cfg.get("split_tunnel", SPLIT_TUNNEL_MODE)
-
+        LOCAL_GW = cfg.get("local_gw", "")
         SHA224_HASH = hashlib.sha224(PASSWORD.encode()).hexdigest().encode()
        # ключ для шифрования канала
         SERVER_SECRET = "SWaT_2008" 
@@ -225,9 +228,21 @@ def add_bypass_routes(local_gw): # маршутизация
                 except: pass
     log_message(f"✅ Добавлено {count} маршрутов в обход VPN.")
 
-def setup_wintun(tun_ip, tun_gw): # вся работа с wintun адаптером, будет описана в описании проекта
-    local_gw = get_default_gateway()
-    if not local_gw: log_message("ОШИБКА: Локальный шлюз не найден!"); return None
+def setup_wintun(tun_ip, tun_gw):
+    # 1. Определяем шлюз: из конфига или автоматически
+    if LOCAL_GW:
+        local_gw = LOCAL_GW
+        log_message(f"Использование шлюза из config.json: {local_gw}")
+    else:
+        local_gw = get_default_gateway()
+        if local_gw:
+            log_message(f"Автоматически найден шлюз: {local_gw}")
+            
+    if not local_gw: 
+        log_message("ОШИБКА: Локальный шлюз не найден!")
+        return None
+
+    
 
     adapter = TunTapDevice(name=ADAPTER_NAME); adapter.mtu = MTU; adapter.up()
     subprocess.run(f'netsh interface ip set address name="{ADAPTER_NAME}" dhcp', shell=True); time.sleep(1)
@@ -237,6 +252,8 @@ def setup_wintun(tun_ip, tun_gw): # вся работа с wintun адаптер
 
     subprocess.run(f'route delete {SERVER_IP}', shell=True)
     subprocess.run(f'route delete 0.0.0.0 mask 0.0.0.0 {tun_gw}', shell=True)
+    
+    # Теперь маршрут до сервера гарантированно пойдет через твой роутер
     subprocess.run(f'route add {SERVER_IP} mask 255.255.255.255 {local_gw} metric 5', shell=True)
     
     download_split_list()
@@ -245,7 +262,6 @@ def setup_wintun(tun_ip, tun_gw): # вся работа с wintun адаптер
     subprocess.run(f'route add 0.0.0.0 mask 0.0.0.0 {tun_gw} metric 1', shell=True)
     log_message(f"WinTUN поднят. IP: {tun_ip}, Шлюз: {tun_gw}")
     return adapter
-
 
 async def send_ping(protocol): # каждые 15 сек отправляет команду ping
     global is_connected
