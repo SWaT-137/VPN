@@ -13,4 +13,9 @@ Thumbs.db
 
 # Логи и временные файлы
 *.log
-*.tmp
+*.tmptrojan-client/dist/
+trojan-client/build/
+*.exe
+*.pkg
+*.aar
+*.zip
